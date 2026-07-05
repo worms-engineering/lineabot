@@ -73,6 +73,7 @@ MIN_GAMES_LINE = 15.0
 _TOTALS_OUTCOME_RE = re.compile(r"^(\d+(?:\.\d+)?)/(over|under)$")
 
 MARKET_NAME = "Total Games O/U"
+H2H_MARKET_NAME = "Match Winner"
 
 
 def _now() -> datetime:
@@ -141,6 +142,38 @@ def _pinnacle_total_games(book_odds: dict) -> dict[str, dict]:
                 "under_price": sides["under"]["price"],
             }
     return result
+
+
+def _pinnacle_h2h(book_odds: dict) -> dict | None:
+    """Parse Pinnacle's full-match winner (head-to-head / moneyline) market.
+
+    The match winner is the 2-way moneyline whose Pinnacle bookmakerMarketId
+    ends in "/0/moneyline" (period 0 = whole match; "/1/moneyline" is a
+    different market). Outcomes are "home" (participant1) and "away"
+    (participant2). Returns {market_id, home_id, away_id, home_price,
+    away_price} or None. Soft books are joined on the shared marketId/outcomeId.
+    """
+    for market_id, market in (book_odds.get("markets") or {}).items():
+        if market.get("marketActive") is False:
+            continue
+        bmid = market.get("bookmakerMarketId") or ""
+        if not bmid.endswith("/0/moneyline"):
+            continue
+        sides: dict[str, dict] = {}
+        for outcome_id, outcome in (market.get("outcomes") or {}).items():
+            price, boid, active = _outcome_price(outcome)
+            if price is None or not active or boid not in ("home", "away"):
+                continue
+            sides[boid] = {"outcome_id": outcome_id, "price": price}
+        if "home" in sides and "away" in sides:
+            return {
+                "market_id": market_id,
+                "home_id": sides["home"]["outcome_id"],
+                "away_id": sides["away"]["outcome_id"],
+                "home_price": sides["home"]["price"],
+                "away_price": sides["away"]["price"],
+            }
+    return None
 
 
 def _single_book_odds(fixture: dict) -> dict | None:
@@ -339,6 +372,40 @@ class TennisMonitor:
                             "is_value": ev >= self.edge_threshold,
                         })
 
+            # Match winner (H2H): same soft-book prices, no line. home = player1,
+            # away = player2. Costs no extra API calls (same odds payload).
+            h2h = _pinnacle_h2h(pin_book)
+            if h2h:
+                p_home, p_away = _no_vig_two_way(h2h["home_price"], h2h["away_price"])
+                p1_name = fx_meta.get("participant1Name") or "1"
+                p2_name = fx_meta.get("participant2Name") or "2"
+                for soft, soft_prices in soft_prices_by_book.items():
+                    market_prices = soft_prices.get(h2h["market_id"])
+                    if not market_prices:
+                        continue
+                    for side_name, outcome_id, pin_price, fair_p in (
+                        (p1_name, h2h["home_id"], h2h["home_price"], p_home),
+                        (p2_name, h2h["away_id"], h2h["away_price"], p_away),
+                    ):
+                        soft_price = market_prices.get(outcome_id)
+                        if not soft_price:
+                            continue
+                        ev = soft_price * fair_p - 1.0
+                        match_value_bets.append({
+                            "fixture_id": fixture_id,
+                            "market_id": h2h["market_id"],
+                            "market_name": H2H_MARKET_NAME,
+                            "handicap": None,
+                            "side": side_name,
+                            "soft_book": soft,
+                            "soft_price": round(soft_price, 3),
+                            "pinnacle_price": round(pin_price, 3),
+                            "fair_price": round(1.0 / fair_p, 3) if fair_p > 0 else None,
+                            "fair_prob": round(fair_p, 4),
+                            "edge": round(ev, 4),
+                            "is_value": ev >= self.edge_threshold,
+                        })
+
             match_info = {
                 "fixture_id": fixture_id,
                 "start_time": fx_meta.get("_startEpoch"),
@@ -426,7 +493,8 @@ class TennisMonitor:
             f"<b>VALUE BET — Tennis</b>\n"
             f"{match['player1']} vs {match['player2']}\n"
             f"{match.get('tournament') or ''} · start {start_str}\n"
-            f"<b>{vb['side']}{line_str}</b> @ <b>{vb['soft_price']:.2f}</b> ({soft_label})\n"
+            f"{vb.get('market_name') or ''} — <b>{vb['side']}{line_str}</b> "
+            f"@ <b>{vb['soft_price']:.2f}</b> ({soft_label})\n"
             f"Pinnacle: {vb['pinnacle_price']:.2f} · Fair: {vb['fair_price']:.2f}\n"
             f"Edge: <b>+{pct:.2f}%</b>"
         )

@@ -123,6 +123,22 @@ def _soft_market(market_id: str, over_price: float, under_price: float) -> dict:
     }
 
 
+# Match-winner (H2H) market: marketId 121, outcomes 121=home, 122=away.
+def _h2h_market(home_price: float, away_price: float, is_pinnacle: bool) -> dict:
+    return {
+        "bookmakerMarketId": "mock/121/0/moneyline" if is_pinnacle else "mock/moneyline",
+        "marketActive": True,
+        "outcomes": {
+            "121": {"players": {"0": {"active": True, "price": home_price,
+                                      "bookmakerOutcomeId": "home" if is_pinnacle else "",
+                                      "mainLine": True}}},
+            "122": {"players": {"0": {"active": True, "price": away_price,
+                                      "bookmakerOutcomeId": "away" if is_pinnacle else "",
+                                      "mainLine": True}}},
+        },
+    }
+
+
 def build_mock_odds(bookmaker: str, tournament_ids: list[int]) -> list[dict]:
     """Fixtures + odds for one bookmaker (v4 shape)."""
     wanted = set(tournament_ids)
@@ -153,6 +169,24 @@ def build_mock_odds(bookmaker: str, tournament_ids: list[int]) -> list[dict]:
             if bookmaker == "bet365" and i == 0 and market_id == "12200":
                 over_price = round(over_price * 1.10, 3)
             markets[market_id] = _soft_market(market_id, over_price, under_price)
+
+        # Match winner (H2H) market.
+        random.seed(tid + 777)  # noqa: S311 - deterministic mock
+        p_home_true = random.uniform(0.4, 0.6)
+        if is_pinnacle:
+            markets["121"] = _h2h_market(
+                round(1 / (p_home_true * 1.025), 3),
+                round(1 / ((1 - p_home_true) * 1.025), 3),
+                True,
+            )
+        else:
+            hm = random.uniform(1.02, 1.07)
+            home_p = round(1 / (p_home_true * hm), 3)
+            away_p = round(1 / ((1 - p_home_true) * hm), 3)
+            # Overprice Betfair's underdog on the 2nd fixture for a value bet.
+            if bookmaker == "betfair" and i == 1:
+                away_p = round(away_p * 1.12, 3)
+            markets["121"] = _h2h_market(home_p, away_p, False)
 
         fixtures.append({
             "fixtureId": _fixture_id(tid),
