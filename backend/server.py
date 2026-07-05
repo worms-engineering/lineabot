@@ -41,20 +41,27 @@ scheduler = AsyncIOScheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await monitor.load_settings()
-    scheduler.add_job(
-        monitor.scan_once,
-        trigger=IntervalTrigger(minutes=REFRESH_MINUTES),
-        id="tennis-scan",
-        next_run_time=datetime.now(timezone.utc),  # run immediately at startup
-        max_instances=1,
-        coalesce=True,
-    )
-    scheduler.start()
-    logger.info("Scheduler started - scan every %d minutes", REFRESH_MINUTES)
+    # REFRESH_MINUTES <= 0 disables the automatic scheduler: scans then happen
+    # only when triggered (e.g. the frontend polls /api/refresh while open), so
+    # no OddsPapi calls are burned when nobody is watching.
+    if REFRESH_MINUTES > 0:
+        scheduler.add_job(
+            monitor.scan_once,
+            trigger=IntervalTrigger(minutes=REFRESH_MINUTES),
+            id="tennis-scan",
+            next_run_time=datetime.now(timezone.utc),  # run immediately at startup
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.start()
+        logger.info("Scheduler started - scan every %d minutes", REFRESH_MINUTES)
+    else:
+        logger.info("Automatic scheduler disabled (REFRESH_MINUTES=%s) - scans are on-demand only", REFRESH_MINUTES)
     try:
         yield
     finally:
-        scheduler.shutdown(wait=False)
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
         await monitor.close()
         client.close()
 

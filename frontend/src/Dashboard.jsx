@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { Toaster, toast } from "sonner";
 import {
@@ -25,6 +25,10 @@ const BOOK_LABELS = {
 };
 const ALL_SOFT_BOOKS = ["bet365", "betfair", "snai"];
 
+// Scans run only while this dashboard tab is open & visible, at this cadence.
+// Raise it to spend fewer OddsPapi calls, lower it for fresher odds.
+const AUTO_SCAN_MINUTES = 5;
+
 function fmtTime(ts) {
   if (!ts) return "—";
   const d = new Date(ts * 1000);
@@ -50,6 +54,9 @@ export default function Dashboard() {
   const [minEdge, setMinEdge] = useState(0);
   const [onlyValue, setOnlyValue] = useState(true);
   const [now, setNow] = useState(Date.now());
+  const [nextAutoScanAt, setNextAutoScanAt] = useState(null);
+  const scanningRef = useRef(false);
+  const lastScanRef = useRef(0);
 
   const loadAll = useCallback(async () => {
     try {
@@ -78,24 +85,57 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, []);
 
-  const manualRefresh = async () => {
+  // Trigger a scan on the backend. Runs on demand (Refresh button) and, while
+  // this tab is open & visible, automatically every AUTO_SCAN_MINUTES.
+  const runScan = useCallback(async (silent = false) => {
+    if (scanningRef.current) return;
+    scanningRef.current = true;
     setRefreshing(true);
     try {
       const r = await axios.post(`${API}/refresh`);
-      toast.success(`Scan completo — ${r.data.stats.value_bets_found} value bet, ${r.data.stats.alerts_sent} alert Telegram`);
+      lastScanRef.current = Date.now();
+      if (!silent) {
+        toast.success(`Scan completo — ${r.data.stats.value_bets_found} value bet, ${r.data.stats.alerts_sent} alert Telegram`);
+      }
       await loadAll();
     } catch (e) {
-      toast.error("Errore durante lo scan: " + (e?.response?.data?.detail || e.message));
+      if (!silent) toast.error("Errore durante lo scan: " + (e?.response?.data?.detail || e.message));
+      else console.error("auto-scan failed", e);
     } finally {
+      scanningRef.current = false;
       setRefreshing(false);
+      setNextAutoScanAt(Date.now() + AUTO_SCAN_MINUTES * 60000);
     }
-  };
+  }, [loadAll]);
+
+  const manualRefresh = () => runScan(false);
+
+  // Auto-scan loop: only while the page is visible, so nothing runs (and no
+  // OddsPapi calls are spent) when the tab is closed or in the background.
+  useEffect(() => {
+    const intervalMs = AUTO_SCAN_MINUTES * 60000;
+    const tick = () => {
+      if (document.visibilityState === "visible") runScan(true);
+    };
+    tick(); // scan immediately when the dashboard opens
+    const timer = setInterval(tick, intervalMs);
+    const onVisible = () => {
+      if (document.visibilityState === "visible" &&
+          Date.now() - lastScanRef.current >= intervalMs) {
+        runScan(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [runScan]);
 
   const nextScanSec = useMemo(() => {
-    if (!status?.next_scan_at) return null;
-    const diff = new Date(status.next_scan_at).getTime() - now;
-    return Math.max(0, Math.floor(diff / 1000));
-  }, [status, now]);
+    if (!nextAutoScanAt) return null;
+    return Math.max(0, Math.floor((nextAutoScanAt - now) / 1000));
+  }, [nextAutoScanAt, now]);
 
   const rows = useMemo(() => {
     if (!snapshot?.matches) return [];
@@ -176,7 +216,7 @@ export default function Dashboard() {
             <StatBox label="Matches" value={totalMatches} testId="stat-matches" />
             <StatBox label="Value Bets" value={totalValueBets} accent testId="stat-valuebets" />
             <StatBox label="Alerts Sent" value={status?.last_scan_stats?.alerts_sent ?? 0} testId="stat-alerts" />
-            <StatBox label="Refresh/h" value={`${settings ? 60 / settings.refresh_minutes : 6}`} testId="stat-refresh" />
+            <StatBox label="Scan/h (open)" value={`${Math.round(60 / AUTO_SCAN_MINUTES)}`} testId="stat-refresh" />
           </div>
 
           <div>
