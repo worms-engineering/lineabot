@@ -16,7 +16,7 @@ tennis-monitor/
 ├── backend/          # FastAPI app (deploy su Render)
 │   ├── server.py             # entrypoint FastAPI (uvicorn server:app)
 │   ├── monitor.py            # logica di scan / calcolo edge / alert
-│   ├── oddspapi_client.py    # client OddsPapi v5 (+ modalità mock)
+│   ├── oddspapi_client.py    # client OddsPapi v4 (+ modalità mock)
 │   ├── telegram_client.py    # invio messaggi Telegram
 │   ├── mock_data.py          # dati demo quando non c'è una key valida
 │   ├── requirements.txt
@@ -37,7 +37,7 @@ tennis-monitor/
 
 - Un database **MongoDB**. In locale va bene `mongodb://localhost:27017`; in produzione
   usa **MongoDB Atlas** (free tier M0) e prendi la connection string `mongodb+srv://...`.
-- Una **key OddsPapi v5** valida (altrimenti usa la modalità demo/mock, vedi sotto).
+- Una **key OddsPapi v4** valida (altrimenti usa la modalità demo/mock, vedi sotto).
 - Un **bot Telegram** (token da @BotFather) e il tuo **chat id**.
 
 > ⚠️ **Sicurezza**: nel file originale erano presenti key OddsPapi e token Telegram in
@@ -96,17 +96,26 @@ Puoi usare il blueprint incluso (`render.yaml`) oppure configurare a mano.
 - Health Check Path: `/`
 - Aggiungi le stesse variabili d'ambiente elencate sopra + `DB_NAME=tennis_monitor`.
 
-### ⚠️ Nota importante sullo scheduler
-Il monitor esegue uno scan automatico ogni `REFRESH_MINUTES` (default 10) tramite un job
-in background (APScheduler) **dentro il processo web**. Sul piano **Free** di Render il
-servizio va in sleep dopo ~15 minuti di inattività: quando dorme, lo scheduler si ferma e
-gli alert automatici non partono finché qualcuno non riapre l'app.
+### ⚠️ Nota importante sullo scheduler / consumo call
+Il monitor può scansionare in due modalità, controllate dalla variabile `REFRESH_MINUTES`:
 
-Per uno scan realmente 24/7 hai due opzioni:
-1. Usa il piano **Starter** ($7/mese) — nel `render.yaml` è già impostato `plan: starter`.
-2. Restando sul free, tieni sveglio il servizio con un ping periodico su `/api/refresh`
-   (es. un **Render Cron Job** o un servizio esterno tipo cron-job.org che chiama
-   `POST https://<tuo-backend>.onrender.com/api/refresh` ogni 10 minuti).
+- **`REFRESH_MINUTES > 0` (es. 10)** — scan automatico ogni N minuti tramite un job in
+  background (APScheduler) **dentro il processo web**. Sul piano **Free** di Render il
+  servizio va in sleep dopo ~15 min di inattività: quando dorme lo scheduler si ferma. Per
+  uno scan davvero 24/7 servono:
+  1. il piano **Starter** ($7/mese) — nel `render.yaml` è già `plan: starter`; oppure
+  2. restando sul free, un ping periodico che tenga sveglio il servizio e faccia scan, es.
+     un servizio esterno (cron-job.org) che chiama
+     `POST https://<tuo-backend>.onrender.com/api/refresh`. Attenzione: così scansiona h24
+     e consuma call anche quando nessuno guarda.
+
+- **`REFRESH_MINUTES = 0` (scan solo da frontend)** — lo scheduler è disattivato e le
+  scansioni partono **solo mentre la dashboard è aperta e visibile** (il frontend chiama
+  `POST /api/refresh` all'apertura e poi ogni `AUTO_SCAN_MINUTES`, vedi
+  `frontend/src/Dashboard.jsx`). A scheda chiusa: zero scan, zero call OddsPapi — ideale
+  per non bruciare una quota limitata. Contropartita: gli alert Telegram arrivano solo
+  mentre tieni aperta la dashboard. In questo caso **disattiva l'eventuale cron esterno**,
+  altrimenti continuerebbe a scansionare a sito chiuso.
 
 Dopo il deploy, copia l'URL pubblico del backend (es.
 `https://tennis-monitor-backend.onrender.com`): ti serve per il frontend.
@@ -150,4 +159,6 @@ Se hai anche un dominio custom, puoi mettere più origin separati da virgola.
 - [ ] Backend Render risponde su `/` e `/api/status`
 - [ ] `VITE_BACKEND_URL` impostato su Vercel = URL del backend
 - [ ] `CORS_ORIGINS` su Render = URL del frontend Vercel
-- [ ] (Se piano free) cron esterno che pinga `/api/refresh` per lo scan 24/7
+- [ ] Modalità di scan scelta:
+  - scan 24/7 → `REFRESH_MINUTES` > 0 (+ piano Starter oppure cron esterno su `/api/refresh`)
+  - scan solo a dashboard aperta → `REFRESH_MINUTES=0` **e** cron esterno disattivato
