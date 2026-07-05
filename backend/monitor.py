@@ -34,7 +34,7 @@ from telegram_client import TelegramClient
 logger = logging.getLogger(__name__)
 
 SHARP_BOOK = "pinnacle"
-SOFT_BOOKS_DEFAULT = ["bet365", "betfair", "snai"]
+SOFT_BOOKS_DEFAULT = ["bet365", "betfair", "snai", "eurobet", "goldbet"]
 
 # Map the canonical book names used in settings / the UI to the v4 API slugs.
 # Betfair is the exchange feed; Snai is a clone of Sisal, so the v4 response is
@@ -45,6 +45,8 @@ BOOK_SLUGS = {
     "bet365": "bet365",
     "betfair": "betfair-ex",
     "snai": "snai.it",
+    "eurobet": "eurobet.it",
+    "goldbet": "goldbet.it",
 }
 
 # Bookmaker display labels
@@ -53,6 +55,8 @@ BOOK_LABELS = {
     "bet365": "Bet365",
     "betfair": "Betfair",
     "snai": "Snai",
+    "eurobet": "Eurobet",
+    "goldbet": "Goldbet",
 }
 
 # Look-ahead window: only alert on matches starting within the next hour.

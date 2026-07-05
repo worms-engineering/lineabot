@@ -21,9 +21,11 @@ const BOOK_LABELS = {
   bet365: "Bet365",
   betfair: "Betfair",
   snai: "Snai",
+  eurobet: "Eurobet",
+  goldbet: "Goldbet",
   pinnacle: "Pinnacle",
 };
-const ALL_SOFT_BOOKS = ["bet365", "betfair", "snai"];
+const ALL_SOFT_BOOKS = ["bet365", "betfair", "snai", "eurobet", "goldbet"];
 
 // Scans run only while this dashboard tab is open & visible, at this cadence.
 // Raise it to spend fewer OddsPapi calls, lower it for fresher odds.

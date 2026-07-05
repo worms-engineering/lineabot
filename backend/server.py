@@ -164,7 +164,7 @@ async def get_settings():
 @api.put("/settings", response_model=SettingsOut)
 async def update_settings(body: SettingsIn):
     if body.soft_books is not None:
-        allowed = {"bet365", "betfair", "snai"}
+        allowed = {"bet365", "betfair", "snai", "eurobet", "goldbet"}
         invalid = [b for b in body.soft_books if b not in allowed]
         if invalid:
             raise HTTPException(400, f"Invalid soft books: {invalid}")
