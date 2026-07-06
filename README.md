@@ -1,9 +1,13 @@
-# Tennis Value Monitor
+# Pinnacle Drop Monitor (Tennis)
 
-Monitor di value bet sul tennis. Confronta le quote **Pinnacle** (sharp, usato come
-riferimento no-vig) con i book soft (**Bet365, Betfair, Snai**) sui mercati Over/Under
-games, e invia un alert **Telegram** quando trova un edge positivo superiore alla soglia
-configurata.
+Monitora i **cali di quota su Pinnacle** (sharp) per i mercati **Match Winner (H2H)** e
+**Total Games** dei match tennis in partenza nei prossimi 60 minuti. Quando una quota cala
+di più della soglia configurata (default 5%) tra due scansioni, invia un alert **Telegram**:
+è un segnale di *steam* (denaro sharp entrato), e i soft book — specie quelli italiani —
+seguono in ritardo, lasciandoti il tempo di agire.
+
+Interroga **solo Pinnacle**, quindi ogni scan costa pochissime chiamate. Il tracciamento si
+accende/spegne da un pulsante in dashboard (o via `POST /api/tracking`).
 
 Questo repository è la versione **standalone**, estratta da Emergent e pronta al deploy
 indipendente:
@@ -96,26 +100,25 @@ Puoi usare il blueprint incluso (`render.yaml`) oppure configurare a mano.
 - Health Check Path: `/`
 - Aggiungi le stesse variabili d'ambiente elencate sopra + `DB_NAME=tennis_monitor`.
 
-### ⚠️ Nota importante sullo scheduler / consumo call
-Il monitor può scansionare in due modalità, controllate dalla variabile `REFRESH_MINUTES`:
+### ⚠️ Scheduler, toggle di tracciamento e consumo call
+Lo scheduler (APScheduler) gira **dentro il processo web** e scansiona ogni `REFRESH_MINUTES`
+(default 10). Ogni scansione è gated dal **toggle di tracciamento**:
 
-- **`REFRESH_MINUTES > 0` (es. 10)** — scan automatico ogni N minuti tramite un job in
-  background (APScheduler) **dentro il processo web**. Sul piano **Free** di Render il
-  servizio va in sleep dopo ~15 min di inattività: quando dorme lo scheduler si ferma. Per
-  uno scan davvero 24/7 servono:
-  1. il piano **Starter** ($7/mese) — nel `render.yaml` è già `plan: starter`; oppure
-  2. restando sul free, un ping periodico che tenga sveglio il servizio e faccia scan, es.
-     un servizio esterno (cron-job.org) che chiama
-     `POST https://<tuo-backend>.onrender.com/api/refresh`. Attenzione: così scansiona h24
-     e consuma call anche quando nessuno guarda.
+- **Tracking ON** → scansiona Pinnacle e rileva i cali di quota.
+- **Tracking OFF** → lo scan viene saltato, **zero chiamate OddsPapi** (utile es. di notte).
 
-- **`REFRESH_MINUTES = 0` (scan solo da frontend)** — lo scheduler è disattivato e le
-  scansioni partono **solo mentre la dashboard è aperta e visibile** (il frontend chiama
-  `POST /api/refresh` all'apertura e poi ogni `AUTO_SCAN_MINUTES`, vedi
-  `frontend/src/Dashboard.jsx`). A scheda chiusa: zero scan, zero call OddsPapi — ideale
-  per non bruciare una quota limitata. Contropartita: gli alert Telegram arrivano solo
-  mentre tieni aperta la dashboard. In questo caso **disattiva l'eventuale cron esterno**,
-  altrimenti continuerebbe a scansionare a sito chiuso.
+Puoi accendere/spegnere dal pulsante in dashboard o con `POST /api/tracking {"enabled": true|false}`.
+`REFRESH_MINUTES = 0` disattiva del tutto lo scheduler (scan solo on-demand via `/api/refresh`).
+
+Il tracciamento richiede osservazioni ravvicinate (confronta la quota con quella dello scan
+precedente), quindi conviene tenerlo attivo di continuo:
+
+- **Piano Starter** ($7/mese) — nel `render.yaml` è già `plan: starter`: il servizio non
+  dorme e lo scheduler gira 24/7.
+- **Piano Free** — il servizio va in sleep dopo ~15 min: per tenerlo sveglio usa un ping
+  periodico su `GET /` (health, **0 chiamate OddsPapi**) da un servizio esterno tipo
+  cron-job.org ogni ~5-10 min. Lo scanning lo fa lo scheduler interno; il ping serve solo a
+  non far addormentare il servizio.
 
 Dopo il deploy, copia l'URL pubblico del backend (es.
 `https://tennis-monitor-backend.onrender.com`): ti serve per il frontend.
@@ -142,11 +145,12 @@ Se hai anche un dominio custom, puoi mettere più origin separati da virgola.
 | Metodo | Path                 | Descrizione                                   |
 |--------|----------------------|-----------------------------------------------|
 | GET    | `/`                  | Health check (usato da Render)                |
-| GET    | `/api/status`        | Stato ultimo scan, prossimo scan, soglia      |
-| GET    | `/api/snapshot`      | Ultimo snapshot dei match e value bet         |
-| GET    | `/api/alerts`        | Storico alert Telegram                        |
-| POST   | `/api/refresh`       | Forza uno scan immediato                       |
-| GET/PUT| `/api/settings`      | Legge/aggiorna soglia, book soft, Telegram    |
+| GET    | `/api/status`        | Stato scan, prossimo scan, soglia, tracking on/off |
+| GET    | `/api/snapshot`      | Ultimo snapshot: match e quote tracciate      |
+| GET    | `/api/alerts`        | Storico alert (cali di quota)                 |
+| POST   | `/api/refresh`       | Forza uno scan immediato (anche se tracking off) |
+| POST   | `/api/tracking`      | Attiva/disattiva il tracciamento `{"enabled": bool}` |
+| GET/PUT| `/api/settings`      | Legge/aggiorna soglia drop, tracking, Telegram |
 | POST   | `/api/telegram/test` | Invia un messaggio Telegram di test           |
 | POST   | `/api/mock/{bool}`   | Attiva/disattiva la modalità demo             |
 
@@ -159,6 +163,6 @@ Se hai anche un dominio custom, puoi mettere più origin separati da virgola.
 - [ ] Backend Render risponde su `/` e `/api/status`
 - [ ] `VITE_BACKEND_URL` impostato su Vercel = URL del backend
 - [ ] `CORS_ORIGINS` su Render = URL del frontend Vercel
-- [ ] Modalità di scan scelta:
-  - scan 24/7 → `REFRESH_MINUTES` > 0 (+ piano Starter oppure cron esterno su `/api/refresh`)
-  - scan solo a dashboard aperta → `REFRESH_MINUTES=0` **e** cron esterno disattivato
+- [ ] `REFRESH_MINUTES` impostato (es. 3-5) e, sul piano Free, cron esterno su `GET /` per
+      tenere sveglio il servizio (0 chiamate OddsPapi)
+- [ ] Tracciamento acceso/spento dal pulsante in dashboard (spegnilo per non consumare call)

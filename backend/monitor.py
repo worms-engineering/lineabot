@@ -1,23 +1,21 @@
-"""Tennis value-bet monitor - core scan logic (OddsPapi v4).
+"""Tennis Pinnacle line-drop monitor - core scan logic (OddsPapi v4).
 
-Compares Pinnacle (sharp) Over/Under total-games markets against soft books
-(Bet365, Betfair, Snai) fetched via the OddsPapi v4 public API. Emits Telegram
-alerts whenever soft odds show positive EV vs the Pinnacle no-vig fair line by
-more than the configured edge threshold.
+Tracks Pinnacle (sharp) prices on the Match Winner (H2H) and the main Total
+Games line for matches starting soon, and fires a Telegram alert when a price
+drops by more than the configured threshold between two scans (a "steam" move).
 
-v4 specifics
-------------
-* Odds are nested `bookmakerOdds -> {book} -> markets -> {marketId} ->
-  outcomes -> {outcomeId} -> players["0"].price`.
-* Pinnacle and the soft books SHARE the same numeric marketId / outcomeId, so
-  the value comparison joins on those ids directly.
-* Only Pinnacle exposes the human-readable line inside `bookmakerOutcomeId`
-  (e.g. "38.5/over"); soft books carry an opaque internal id there. The line is
-  therefore always taken from Pinnacle.
-* The scan discovers matches with a single /fixtures?from&to call (the fresh
-  schedule, with player and tournament names embedded), then fetches odds only
-  for that handful of tournaments and joins them back by fixtureId. This avoids
-  sweeping every active tournament and drops a scan from ~40 calls to a handful.
+Rationale: when Pinnacle drops, sharp money has moved. Slow soft books (especially
+the Italian ones) still show the old, higher price for a while, so there is time
+to act. Only Pinnacle is queried, so a scan costs very few API calls.
+
+Tracking can be turned on/off at runtime (dashboard toggle); while off, scans are
+skipped and no OddsPapi calls are spent.
+
+v4 specifics: odds are nested `bookmakerOdds -> {book} -> markets -> {marketId} ->
+outcomes -> {outcomeId} -> players["0"]`. Pinnacle exposes the H2H as the moneyline
+whose bookmakerMarketId ends "/0/moneyline" (home=player1 / away=player2), and the
+total-games line inside bookmakerOutcomeId (e.g. "37.0/over") with the main line
+flagged players.0.mainLine == true.
 """
 from __future__ import annotations
 
@@ -25,7 +23,7 @@ import asyncio
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from oddspapi_client import OddsPapiClient
@@ -34,57 +32,28 @@ from telegram_client import TelegramClient
 logger = logging.getLogger(__name__)
 
 SHARP_BOOK = "pinnacle"
-SOFT_BOOKS_DEFAULT = ["bet365", "betfair", "snai", "eurobet", "goldbet"]
 
-# Map the canonical book names used in settings / the UI to the v4 API slugs.
-# Betfair is the exchange feed; Snai is a clone of Sisal, so the v4 response is
-# keyed "sisal.it" (the odds are identical). We always read whichever single
-# book the response carries rather than relying on this key.
-BOOK_SLUGS = {
-    "pinnacle": "pinnacle",
-    "bet365": "bet365",
-    "betfair": "betfair-ex",
-    "snai": "snai.it",
-    "eurobet": "eurobet.it",
-    "goldbet": "goldbet.it",
-}
-
-# Bookmaker display labels
-BOOK_LABELS = {
-    "pinnacle": "Pinnacle",
-    "bet365": "Bet365",
-    "betfair": "Betfair",
-    "snai": "Snai",
-    "eurobet": "Eurobet",
-    "goldbet": "Goldbet",
-}
-
-# Look-ahead window: only alert on matches starting within the next hour.
+# Only track matches starting within the next hour.
 WINDOW_SECONDS = 60 * 60
 
-# A full-match total-games line is always well above per-set game totals
-# (~8-13) and total-sets lines (~2.5-4.5). This threshold cleanly isolates the
-# full-match "Total Games" market from those other over/under markets.
+# Full-match total-games lines sit well above per-set/total-sets lines.
 MIN_GAMES_LINE = 15.0
-
-# Pinnacle encodes total-games outcomes as "<line>/over" or "<line>/under".
-# Per-player (teamTotal) outcomes carry a "home/"/"away/" prefix and are
-# intentionally excluded by anchoring the regex at the start of the string.
 _TOTALS_OUTCOME_RE = re.compile(r"^(\d+(?:\.\d+)?)/(over|under)$")
 
-MARKET_NAME = "Total Games O/U"
+DEFAULT_DROP_THRESHOLD = 0.05  # alert when a price drops >= 5% between scans
+
+# Ignore a previous observation older than this when computing a drop (e.g. after
+# tracking was paused): just re-baseline instead of firing a false alert.
+MAX_BASELINE_AGE_SECONDS = 30 * 60
+# Drop tracked-line state not refreshed in this long (match already started).
+LINE_STATE_TTL_SECONDS = 6 * 60 * 60
+
 H2H_MARKET_NAME = "Match Winner"
+TOTALS_MARKET_NAME = "Total Games"
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _no_vig_two_way(price_a: float, price_b: float) -> tuple[float, float]:
-    """Return no-vig fair probabilities for a two-way market."""
-    ia, ib = 1.0 / price_a, 1.0 / price_b
-    total = ia + ib
-    return ia / total, ib / total
 
 
 def _parse_start_epoch(value: Any) -> int | None:
@@ -94,8 +63,7 @@ def _parse_start_epoch(value: Any) -> int | None:
     if isinstance(value, (int, float)):
         return int(value)
     try:
-        text = str(value).replace("Z", "+00:00")
-        dt = datetime.fromisoformat(text)
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp())
@@ -103,68 +71,38 @@ def _parse_start_epoch(value: Any) -> int | None:
         return None
 
 
-def _outcome_price(outcome: dict) -> tuple[float | None, str | None, bool]:
-    """Extract (price, bookmakerOutcomeId, active) from an outcome's player 0."""
-    player = (outcome.get("players") or {}).get("0") or {}
-    price = player.get("price")
-    price = float(price) if price is not None else None
-    return price, player.get("bookmakerOutcomeId"), player.get("active") is not False
+def _single_book_odds(fixture: dict) -> dict | None:
+    """Return the one bookmaker's odds object from a fixture (Pinnacle here)."""
+    return next(iter((fixture.get("bookmakerOdds") or {}).values()), None)
 
 
-def _pinnacle_total_games(book_odds: dict) -> dict[str, dict]:
-    """Parse Pinnacle's full-match total-games markets.
-
-    Returns { marketId: {line, over_id, under_id, over_price, under_price} }
-    keeping only markets where both Over and Under are currently active.
-    """
-    result: dict[str, dict] = {}
-    for market_id, market in (book_odds.get("markets") or {}).items():
-        if market.get("marketActive") is False:
-            continue
-        sides: dict[str, dict] = {}
-        for outcome_id, outcome in (market.get("outcomes") or {}).items():
-            price, boid, active = _outcome_price(outcome)
-            if price is None or not active or not boid:
-                continue
-            m = _TOTALS_OUTCOME_RE.match(boid)
-            if not m:
-                continue
-            line = float(m.group(1))
-            if line < MIN_GAMES_LINE:
-                continue
-            sides[m.group(2)] = {"outcome_id": outcome_id, "price": price, "line": line}
-        if "over" in sides and "under" in sides:
-            result[market_id] = {
-                "line": sides["over"]["line"],
-                "over_id": sides["over"]["outcome_id"],
-                "under_id": sides["under"]["outcome_id"],
-                "over_price": sides["over"]["price"],
-                "under_price": sides["under"]["price"],
-            }
-    return result
+def _is_real_tennis(fx: dict) -> bool:
+    """Exclude simulated-reality (SRL) and virtual tennis: Pinnacle never prices
+    them, so tracking them only wastes API calls."""
+    text = f"{fx.get('categoryName') or ''} {fx.get('tournamentName') or ''}".lower()
+    return not ("simulated" in text or "virtual" in text or "srl " in text)
 
 
 def _pinnacle_h2h(book_odds: dict) -> dict | None:
-    """Parse Pinnacle's full-match winner (head-to-head / moneyline) market.
+    """Parse Pinnacle's full-match winner (moneyline) market.
 
-    The match winner is the 2-way moneyline whose Pinnacle bookmakerMarketId
-    ends in "/0/moneyline" (period 0 = whole match; "/1/moneyline" is a
-    different market). Outcomes are "home" (participant1) and "away"
-    (participant2). Returns {market_id, home_id, away_id, home_price,
-    away_price} or None. Soft books are joined on the shared marketId/outcomeId.
+    The match winner is the 2-way moneyline whose bookmakerMarketId ends
+    "/0/moneyline"; outcomes are "home" (participant1) and "away" (participant2).
     """
     for market_id, market in (book_odds.get("markets") or {}).items():
         if market.get("marketActive") is False:
             continue
-        bmid = market.get("bookmakerMarketId") or ""
-        if not bmid.endswith("/0/moneyline"):
+        if not (market.get("bookmakerMarketId") or "").endswith("/0/moneyline"):
             continue
         sides: dict[str, dict] = {}
         for outcome_id, outcome in (market.get("outcomes") or {}).items():
-            price, boid, active = _outcome_price(outcome)
-            if price is None or not active or boid not in ("home", "away"):
+            player = (outcome.get("players") or {}).get("0") or {}
+            price = player.get("price")
+            if price is None or player.get("active") is False:
                 continue
-            sides[boid] = {"outcome_id": outcome_id, "price": price}
+            boid = player.get("bookmakerOutcomeId")
+            if boid in ("home", "away"):
+                sides[boid] = {"outcome_id": outcome_id, "price": float(price)}
         if "home" in sides and "away" in sides:
             return {
                 "market_id": market_id,
@@ -176,43 +114,68 @@ def _pinnacle_h2h(book_odds: dict) -> dict | None:
     return None
 
 
-def _single_book_odds(fixture: dict) -> dict | None:
-    """Return the one bookmaker's odds object from a fixture.
-
-    Each /odds-by-tournaments call is for a single bookmaker, so `bookmakerOdds`
-    holds at most one entry. Its key can differ from the requested slug (e.g.
-    Snai -> "sisal.it"), so we take the value regardless of the key.
-    """
-    book_odds = fixture.get("bookmakerOdds") or {}
-    return next(iter(book_odds.values()), None)
-
-
-def _book_prices(book_odds: dict) -> dict[str, dict[str, float]]:
-    """Parse any book's active prices into { marketId: { outcomeId: price } }."""
-    result: dict[str, dict[str, float]] = {}
-    if not book_odds or book_odds.get("suspended"):
-        return result
+def _pinnacle_main_total(book_odds: dict) -> dict | None:
+    """Parse Pinnacle's main-line total-games market (players.0.mainLine == true)."""
     for market_id, market in (book_odds.get("markets") or {}).items():
         if market.get("marketActive") is False:
             continue
-        prices: dict[str, float] = {}
+        sides: dict[str, dict] = {}
+        is_main = False
         for outcome_id, outcome in (market.get("outcomes") or {}).items():
-            price, _boid, active = _outcome_price(outcome)
-            if price is None or not active:
+            player = (outcome.get("players") or {}).get("0") or {}
+            price = player.get("price")
+            if price is None or player.get("active") is False:
                 continue
-            prices[outcome_id] = price
-        if prices:
-            result[market_id] = prices
-    return result
+            m = _TOTALS_OUTCOME_RE.match(player.get("bookmakerOutcomeId") or "")
+            if not m:
+                continue
+            line = float(m.group(1))
+            if line < MIN_GAMES_LINE:
+                continue
+            if player.get("mainLine"):
+                is_main = True
+            sides[m.group(2)] = {"outcome_id": outcome_id, "price": float(price), "line": line}
+        if is_main and "over" in sides and "under" in sides:
+            return {
+                "market_id": market_id,
+                "line": sides["over"]["line"],
+                "over_id": sides["over"]["outcome_id"],
+                "under_id": sides["under"]["outcome_id"],
+                "over_price": sides["over"]["price"],
+                "under_price": sides["under"]["price"],
+            }
+    return None
+
+
+def _tracked_selections(pin_book: dict, fx_meta: dict) -> list[dict]:
+    """Pinnacle selections to watch for drops: H2H (both players) + main total O/U."""
+    out: list[dict] = []
+    h2h = _pinnacle_h2h(pin_book)
+    if h2h:
+        p1 = fx_meta.get("participant1Name") or "1"
+        p2 = fx_meta.get("participant2Name") or "2"
+        out.append({"market_id": h2h["market_id"], "outcome_id": h2h["home_id"],
+                    "market_name": H2H_MARKET_NAME, "label": p1, "price": h2h["home_price"]})
+        out.append({"market_id": h2h["market_id"], "outcome_id": h2h["away_id"],
+                    "market_name": H2H_MARKET_NAME, "label": p2, "price": h2h["away_price"]})
+    main = _pinnacle_main_total(pin_book)
+    if main:
+        out.append({"market_id": main["market_id"], "outcome_id": main["over_id"],
+                    "market_name": TOTALS_MARKET_NAME, "label": f"Over {main['line']}",
+                    "price": main["over_price"]})
+        out.append({"market_id": main["market_id"], "outcome_id": main["under_id"],
+                    "market_name": TOTALS_MARKET_NAME, "label": f"Under {main['line']}",
+                    "price": main["under_price"]})
+    return out
 
 
 class TennisMonitor:
-    def __init__(self, db, edge_threshold: float = 0.03):
+    def __init__(self, db, drop_threshold: float = DEFAULT_DROP_THRESHOLD):
         self.db = db
         self.oddspapi = OddsPapiClient()
         self.telegram = TelegramClient()
-        self.edge_threshold = edge_threshold
-        self.soft_books = list(SOFT_BOOKS_DEFAULT)
+        self.drop_threshold = drop_threshold
+        self.tracking_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -224,8 +187,9 @@ class TennisMonitor:
     async def load_settings(self):
         cfg = await self.db.settings.find_one({"_id": "config"})
         if cfg:
-            self.edge_threshold = float(cfg.get("edge_threshold", self.edge_threshold))
-            self.soft_books = list(cfg.get("soft_books") or SOFT_BOOKS_DEFAULT)
+            self.drop_threshold = float(cfg.get("drop_threshold", self.drop_threshold))
+            if "tracking_enabled" in cfg:
+                self.tracking_enabled = bool(cfg["tracking_enabled"])
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
             if token:
@@ -233,17 +197,17 @@ class TennisMonitor:
             if chat_id:
                 self.telegram.chat_id = chat_id
 
-    async def save_settings(self, edge_threshold: float | None = None,
-                            soft_books: list[str] | None = None,
+    async def save_settings(self, drop_threshold: float | None = None,
+                            tracking_enabled: bool | None = None,
                             telegram_token: str | None = None,
                             telegram_chat_id: str | None = None):
         update: dict[str, Any] = {}
-        if edge_threshold is not None:
-            self.edge_threshold = float(edge_threshold)
-            update["edge_threshold"] = self.edge_threshold
-        if soft_books is not None:
-            self.soft_books = list(soft_books)
-            update["soft_books"] = self.soft_books
+        if drop_threshold is not None:
+            self.drop_threshold = float(drop_threshold)
+            update["drop_threshold"] = self.drop_threshold
+        if tracking_enabled is not None:
+            self.tracking_enabled = bool(tracking_enabled)
+            update["tracking_enabled"] = self.tracking_enabled
         if telegram_token is not None:
             self.telegram.token = telegram_token
             update["telegram_token"] = telegram_token
@@ -255,9 +219,17 @@ class TennisMonitor:
                 {"_id": "config"}, {"$set": update}, upsert=True
             )
 
-    async def scan_once(self, dry_run_notify: bool = False) -> dict:
+    async def set_tracking(self, enabled: bool) -> bool:
+        await self.save_settings(tracking_enabled=enabled)
+        return self.tracking_enabled
+
+    async def scan_once(self, force: bool = False, dry_run_notify: bool = False) -> dict:
         async with self._lock:
             started = _now()
+            if not self.tracking_enabled and not force:
+                self.last_scan_at = started
+                self.last_scan_stats = {"skipped": True, "tracking_enabled": False}
+                return self.last_scan_stats
             try:
                 result = await self._scan_impl(dry_run_notify=dry_run_notify)
                 self.last_scan_at = started
@@ -283,17 +255,15 @@ class TennisMonitor:
                 return {"error": str(e)}
 
     async def _scan_impl(self, dry_run_notify: bool) -> dict:
-        now_ts = int(_now().timestamp())
+        now_dt = _now()
+        now_ts = int(now_dt.timestamp())
         end_ts = now_ts + WINDOW_SECONDS
 
-        # 1) One /fixtures call: the fresh schedule of matches starting in the
-        #    window, already carrying player & tournament names. This is the only
-        #    tournament-discovery step, so we fetch odds for just this handful of
-        #    tournaments instead of sweeping every active one.
+        # 1) Fresh schedule of matches starting in the window (names embedded).
         schedule = await self.oddspapi.get_fixtures(now_ts, end_ts)
         window_meta: list[dict] = []
         for fx in schedule:
-            if not fx.get("hasOdds"):
+            if not fx.get("hasOdds") or not _is_real_tennis(fx):
                 continue
             start_epoch = _parse_start_epoch(fx.get("startTime"))
             if start_epoch is None or not (now_ts < start_epoch <= end_ts):
@@ -304,24 +274,18 @@ class TennisMonitor:
         fixture_meta_by_id = {fx["fixtureId"]: fx for fx in window_meta}
         relevant_ids = sorted({fx["tournamentId"] for fx in window_meta})
 
-        # 2) Odds for only those tournaments (one sequential call per book to
-        #    respect the ~1 req/s rate limit), joined back to the schedule by
-        #    fixtureId so stale phantom fixtures are dropped.
-        odds_by_book: dict[str, dict[str, dict]] = {}
-        if relevant_ids:
-            for book in [SHARP_BOOK] + list(self.soft_books):
-                slug = BOOK_SLUGS.get(book, book)
-                fixtures = await self.oddspapi.get_odds_by_tournaments(slug, relevant_ids)
-                odds_by_book[book] = {
-                    f["fixtureId"]: f
-                    for f in fixtures
-                    if f["fixtureId"] in fixture_meta_by_id
-                }
-
-        pin_by_id = odds_by_book.get(SHARP_BOOK, {})
+        # 2) Pinnacle odds only (no soft books) for those tournaments.
+        pin_fixtures = (
+            await self.oddspapi.get_odds_by_tournaments(SHARP_BOOK, relevant_ids)
+            if relevant_ids else []
+        )
+        pin_by_id = {
+            f["fixtureId"]: f for f in pin_fixtures
+            if f["fixtureId"] in fixture_meta_by_id
+        }
 
         matches_payload: list[dict] = []
-        value_bets_all: list[dict] = []
+        drops_found = 0
         alerts_sent = 0
 
         for fx_meta in window_meta:
@@ -331,170 +295,139 @@ class TennisMonitor:
             if not pin_book or pin_book.get("suspended"):
                 continue
 
-            pin_markets = _pinnacle_total_games(pin_book)
-            match_value_bets: list[dict] = []
+            line_rows: list[dict] = []
+            for sel in _tracked_selections(pin_book, fx_meta):
+                key = f"{fixture_id}:{sel['market_id']}:{sel['outcome_id']}"
+                prev = await self.db.line_state.find_one({"_id": key})
+                curr = sel["price"]
+                open_price = curr
+                first_seen = now_dt.isoformat()
+                drop_last = 0.0
+                is_drop = False
+                prev_price = None
 
-            # Parse each soft book's prices once for this fixture.
-            soft_prices_by_book: dict[str, dict[str, dict[str, float]]] = {}
-            for soft in self.soft_books:
-                soft_fx = odds_by_book.get(soft, {}).get(fixture_id)
-                if soft_fx:
-                    soft_prices_by_book[soft] = _book_prices(_single_book_odds(soft_fx) or {})
+                if prev:
+                    open_price = prev.get("open_price") or prev.get("price") or curr
+                    first_seen = prev.get("first_seen_at") or first_seen
+                    prev_price = prev.get("price")
+                    fresh = True
+                    prev_at = prev.get("updated_at")
+                    if prev_at:
+                        prev_epoch = _parse_start_epoch(prev_at)
+                        if prev_epoch is not None:
+                            fresh = (now_ts - prev_epoch) <= MAX_BASELINE_AGE_SECONDS
+                    if prev_price and curr < prev_price:
+                        drop_last = (prev_price - curr) / prev_price
+                        if fresh and drop_last >= self.drop_threshold:
+                            is_drop = True
 
-            for market_id, info in pin_markets.items():
-                p_over, p_under = _no_vig_two_way(info["over_price"], info["under_price"])
+                drop_from_open = (
+                    (open_price - curr) / open_price
+                    if open_price and curr < open_price else 0.0
+                )
 
-                for soft, soft_prices in soft_prices_by_book.items():
-                    market_prices = soft_prices.get(market_id)
-                    if not market_prices:
-                        continue
+                await self.db.line_state.update_one(
+                    {"_id": key},
+                    {"$set": {
+                        "price": curr,
+                        "open_price": open_price,
+                        "first_seen_at": first_seen,
+                        "updated_at": now_dt.isoformat(),
+                        "fixture_id": fixture_id,
+                    }},
+                    upsert=True,
+                )
 
-                    for side_name, outcome_id, pin_price, fair_p in (
-                        ("Over", info["over_id"], info["over_price"], p_over),
-                        ("Under", info["under_id"], info["under_price"], p_under),
-                    ):
-                        soft_price = market_prices.get(outcome_id)
-                        if not soft_price:
-                            continue
-                        ev = soft_price * fair_p - 1.0
-                        match_value_bets.append({
-                            "fixture_id": fixture_id,
-                            "market_id": market_id,
-                            "market_name": MARKET_NAME,
-                            "handicap": info["line"],
-                            "side": side_name,
-                            "soft_book": soft,
-                            "soft_price": round(soft_price, 3),
-                            "pinnacle_price": round(pin_price, 3),
-                            "fair_price": round(1.0 / fair_p, 3) if fair_p > 0 else None,
-                            "fair_prob": round(fair_p, 4),
-                            "edge": round(ev, 4),
-                            "is_value": ev >= self.edge_threshold,
-                        })
+                if is_drop:
+                    drops_found += 1
+                    text = self._format_drop_alert(
+                        fx_meta, sel, prev_price, curr, drop_last, drop_from_open
+                    )
+                    tg_result = {"ok": False}
+                    if not dry_run_notify:
+                        try:
+                            tg_result = await self.telegram.send_message(text)
+                        except Exception as e:
+                            tg_result = {"ok": False, "error": str(e)}
+                    await self.db.alerts.insert_one({
+                        "_id": str(uuid.uuid4()),
+                        "type": "drop",
+                        "created_at": now_dt.isoformat(),
+                        "fixture_id": fixture_id,
+                        "player1": fx_meta.get("participant1Name"),
+                        "player2": fx_meta.get("participant2Name"),
+                        "tournament": fx_meta.get("tournamentName"),
+                        "market_name": sel["market_name"],
+                        "label": sel["label"],
+                        "prev_price": round(prev_price, 3) if prev_price else None,
+                        "price": round(curr, 3),
+                        "drop_last": round(drop_last, 4),
+                        "drop_from_open": round(drop_from_open, 4),
+                        "telegram_ok": bool(tg_result.get("ok")),
+                        "telegram_response": tg_result,
+                        "message": text,
+                    })
+                    alerts_sent += 1
 
-            # Match winner (H2H): same soft-book prices, no line. home = player1,
-            # away = player2. Costs no extra API calls (same odds payload).
-            h2h = _pinnacle_h2h(pin_book)
-            if h2h:
-                p_home, p_away = _no_vig_two_way(h2h["home_price"], h2h["away_price"])
-                p1_name = fx_meta.get("participant1Name") or "1"
-                p2_name = fx_meta.get("participant2Name") or "2"
-                for soft, soft_prices in soft_prices_by_book.items():
-                    market_prices = soft_prices.get(h2h["market_id"])
-                    if not market_prices:
-                        continue
-                    for side_name, outcome_id, pin_price, fair_p in (
-                        (p1_name, h2h["home_id"], h2h["home_price"], p_home),
-                        (p2_name, h2h["away_id"], h2h["away_price"], p_away),
-                    ):
-                        soft_price = market_prices.get(outcome_id)
-                        if not soft_price:
-                            continue
-                        ev = soft_price * fair_p - 1.0
-                        match_value_bets.append({
-                            "fixture_id": fixture_id,
-                            "market_id": h2h["market_id"],
-                            "market_name": H2H_MARKET_NAME,
-                            "handicap": None,
-                            "side": side_name,
-                            "soft_book": soft,
-                            "soft_price": round(soft_price, 3),
-                            "pinnacle_price": round(pin_price, 3),
-                            "fair_price": round(1.0 / fair_p, 3) if fair_p > 0 else None,
-                            "fair_prob": round(fair_p, 4),
-                            "edge": round(ev, 4),
-                            "is_value": ev >= self.edge_threshold,
-                        })
+                line_rows.append({
+                    "market_name": sel["market_name"],
+                    "label": sel["label"],
+                    "market_id": sel["market_id"],
+                    "price": round(curr, 3),
+                    "open_price": round(open_price, 3),
+                    "drop_from_open": round(drop_from_open, 4),
+                    "drop_last": round(drop_last, 4),
+                    "is_drop": is_drop,
+                })
 
-            match_info = {
-                "fixture_id": fixture_id,
-                "start_time": fx_meta.get("_startEpoch"),
-                "true_start_time": _parse_start_epoch(fx_meta.get("trueStartTime")),
-                "tournament": fx_meta.get("tournamentName"),
-                "category": fx_meta.get("categoryName"),
-                "player1": fx_meta.get("participant1Name")
-                or fx_meta.get("participant1Id"),
-                "player2": fx_meta.get("participant2Name")
-                or fx_meta.get("participant2Id"),
-                "value_bets": match_value_bets,
-            }
-            matches_payload.append(match_info)
-            value_bets_all.extend(match_value_bets)
+            if line_rows:
+                matches_payload.append({
+                    "fixture_id": fixture_id,
+                    "start_time": fx_meta.get("_startEpoch"),
+                    "tournament": fx_meta.get("tournamentName"),
+                    "player1": fx_meta.get("participant1Name") or fx_meta.get("participant1Id"),
+                    "player2": fx_meta.get("participant2Name") or fx_meta.get("participant2Id"),
+                    "lines": line_rows,
+                })
 
-            # Send alerts for value bets not already alerted recently.
-            for vb in match_value_bets:
-                if not vb["is_value"]:
-                    continue
-                dedup_key = f"{vb['fixture_id']}:{vb['market_id']}:{vb['side']}:{vb['soft_book']}"
-                exists = await self.db.alerts.find_one({"dedup_key": dedup_key})
-                if exists:
-                    continue
-                text = self._format_alert(match_info, vb)
-                tg_result = {"ok": False}
-                if not dry_run_notify:
-                    try:
-                        tg_result = await self.telegram.send_message(text)
-                    except Exception as e:
-                        tg_result = {"ok": False, "error": str(e)}
-                alert_doc = {
-                    "_id": str(uuid.uuid4()),
-                    "dedup_key": dedup_key,
-                    "created_at": _now().isoformat(),
-                    "fixture_id": vb["fixture_id"],
-                    "player1": match_info["player1"],
-                    "player2": match_info["player2"],
-                    "tournament": match_info["tournament"],
-                    "market_name": vb["market_name"],
-                    "handicap": vb["handicap"],
-                    "side": vb["side"],
-                    "soft_book": vb["soft_book"],
-                    "soft_price": vb["soft_price"],
-                    "pinnacle_price": vb["pinnacle_price"],
-                    "fair_price": vb["fair_price"],
-                    "edge": vb["edge"],
-                    "telegram_ok": bool(tg_result.get("ok")),
-                    "telegram_response": tg_result,
-                    "message": text,
-                }
-                await self.db.alerts.insert_one(alert_doc)
-                alerts_sent += 1
+        # Prune stale tracked-line state (matches already started).
+        cutoff = (now_dt - timedelta(seconds=LINE_STATE_TTL_SECONDS)).isoformat()
+        try:
+            await self.db.line_state.delete_many({"updated_at": {"$lt": cutoff}})
+        except Exception:
+            logger.debug("line_state prune skipped")
 
-        # Save the latest scan snapshot for the UI.
         await self.db.snapshots.update_one(
             {"_id": "latest"},
             {"$set": {
-                "updated_at": _now().isoformat(),
-                "edge_threshold": self.edge_threshold,
-                "soft_books": self.soft_books,
+                "updated_at": now_dt.isoformat(),
+                "drop_threshold": self.drop_threshold,
+                "tracking_enabled": self.tracking_enabled,
                 "matches": matches_payload,
             }},
             upsert=True,
         )
 
-        stats = {
-            "fixtures_scanned": len(window_meta),
-            "matches_with_odds": sum(1 for m in matches_payload if m["value_bets"]),
-            "value_bets_found": sum(1 for vb in value_bets_all if vb["is_value"]),
+        return {
+            "fixtures_tracked": len(matches_payload),
+            "selections_tracked": sum(len(m["lines"]) for m in matches_payload),
+            "drops_found": drops_found,
             "alerts_sent": alerts_sent,
         }
-        return stats
 
-    def _format_alert(self, match: dict, vb: dict) -> str:
-        pct = vb["edge"] * 100
-        soft_label = BOOK_LABELS.get(vb["soft_book"], vb["soft_book"].title())
-        line = vb["handicap"]
-        line_str = f" {line}" if line is not None else ""
-        start_ts = match.get("start_time")
+    def _format_drop_alert(self, fx_meta: dict, sel: dict, prev_price: float,
+                           curr: float, drop_last: float, drop_from_open: float) -> str:
+        start_ts = fx_meta.get("_startEpoch")
         start_str = ""
         if start_ts:
-            start_dt = datetime.fromtimestamp(start_ts, tz=timezone.utc)
-            start_str = start_dt.strftime("%H:%M UTC")
+            start_str = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%H:%M UTC")
+        p1 = fx_meta.get("participant1Name") or "1"
+        p2 = fx_meta.get("participant2Name") or "2"
         return (
-            f"<b>VALUE BET — Tennis</b>\n"
-            f"{match['player1']} vs {match['player2']}\n"
-            f"{match.get('tournament') or ''} · start {start_str}\n"
-            f"{vb.get('market_name') or ''} — <b>{vb['side']}{line_str}</b> "
-            f"@ <b>{vb['soft_price']:.2f}</b> ({soft_label})\n"
-            f"Pinnacle: {vb['pinnacle_price']:.2f} · Fair: {vb['fair_price']:.2f}\n"
-            f"Edge: <b>+{pct:.2f}%</b>"
+            f"<b>⬇️ PINNACLE DROP — Tennis</b>\n"
+            f"{p1} vs {p2}\n"
+            f"{fx_meta.get('tournamentName') or ''} · start {start_str}\n"
+            f"{sel['market_name']} — <b>{sel['label']}</b>\n"
+            f"{prev_price:.2f} → <b>{curr:.2f}</b> (<b>-{drop_last * 100:.1f}%</b>)\n"
+            f"da apertura: -{drop_from_open * 100:.1f}%"
         )

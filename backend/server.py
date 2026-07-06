@@ -16,7 +16,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from monitor import TennisMonitor, SOFT_BOOKS_DEFAULT
+from monitor import TennisMonitor
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -73,15 +73,15 @@ api = APIRouter(prefix="/api")
 # ---- Models ----------------------------------------------------------------
 
 class SettingsIn(BaseModel):
-    edge_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
-    soft_books: list[str] | None = None
+    drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    tracking_enabled: bool | None = None
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
 
 
 class SettingsOut(BaseModel):
-    edge_threshold: float
-    soft_books: list[str]
+    drop_threshold: float
+    tracking_enabled: bool
     telegram_configured: bool
     refresh_minutes: int
 
@@ -92,8 +92,13 @@ class StatusOut(BaseModel):
     last_scan_stats: dict[str, Any]
     next_scan_at: str | None
     refresh_minutes: int
-    edge_threshold: float
+    drop_threshold: float
+    tracking_enabled: bool
     use_mock_data: bool
+
+
+class TrackingIn(BaseModel):
+    enabled: bool
 
 
 # ---- Endpoints -------------------------------------------------------------
@@ -119,7 +124,8 @@ async def get_status():
         last_scan_stats=monitor.last_scan_stats,
         next_scan_at=next_run,
         refresh_minutes=REFRESH_MINUTES,
-        edge_threshold=monitor.edge_threshold,
+        drop_threshold=monitor.drop_threshold,
+        tracking_enabled=monitor.tracking_enabled,
         use_mock_data=monitor.oddspapi.use_mock,
     )
 
@@ -130,8 +136,8 @@ async def get_snapshot():
     if not snap:
         return {
             "updated_at": None,
-            "edge_threshold": monitor.edge_threshold,
-            "soft_books": monitor.soft_books,
+            "drop_threshold": monitor.drop_threshold,
+            "tracking_enabled": monitor.tracking_enabled,
             "matches": [],
         }
     return snap
@@ -147,41 +153,40 @@ async def list_alerts(limit: int = 50):
 
 @api.post("/refresh")
 async def manual_refresh():
-    stats = await monitor.scan_once()
+    # Force a scan on demand even if tracking is currently paused.
+    stats = await monitor.scan_once(force=True)
     return {"ok": True, "stats": stats}
+
+
+@api.post("/tracking")
+async def set_tracking(body: TrackingIn):
+    enabled = await monitor.set_tracking(body.enabled)
+    return {"tracking_enabled": enabled}
+
+
+def _settings_out() -> SettingsOut:
+    return SettingsOut(
+        drop_threshold=monitor.drop_threshold,
+        tracking_enabled=monitor.tracking_enabled,
+        telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
+        refresh_minutes=REFRESH_MINUTES,
+    )
 
 
 @api.get("/settings", response_model=SettingsOut)
 async def get_settings():
-    return SettingsOut(
-        edge_threshold=monitor.edge_threshold,
-        soft_books=monitor.soft_books,
-        telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
-        refresh_minutes=REFRESH_MINUTES,
-    )
+    return _settings_out()
 
 
 @api.put("/settings", response_model=SettingsOut)
 async def update_settings(body: SettingsIn):
-    if body.soft_books is not None:
-        allowed = {"bet365", "betfair", "snai", "eurobet", "goldbet"}
-        invalid = [b for b in body.soft_books if b not in allowed]
-        if invalid:
-            raise HTTPException(400, f"Invalid soft books: {invalid}")
-        if not body.soft_books:
-            raise HTTPException(400, "Select at least one soft book")
     await monitor.save_settings(
-        edge_threshold=body.edge_threshold,
-        soft_books=body.soft_books,
+        drop_threshold=body.drop_threshold,
+        tracking_enabled=body.tracking_enabled,
         telegram_token=body.telegram_token,
         telegram_chat_id=body.telegram_chat_id,
     )
-    return SettingsOut(
-        edge_threshold=monitor.edge_threshold,
-        soft_books=monitor.soft_books,
-        telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
-        refresh_minutes=REFRESH_MINUTES,
-    )
+    return _settings_out()
 
 
 @api.post("/telegram/test")
