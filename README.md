@@ -9,6 +9,12 @@ seguono in ritardo, lasciandoti il tempo di agire.
 Interroga **solo Pinnacle**, quindi ogni scan costa pochissime chiamate. Il tracciamento si
 accende/spegne da un pulsante in dashboard (o via `POST /api/tracking`).
 
+**Provider selezionabile** dalla dashboard (o via `PUT /api/settings {"provider": ...}`):
+- **The Odds API** — solo tornei principali (Slam, Masters), dati puliti, quota a crediti.
+- **OddsPapi** — calendario completo incl. Challenger/ITF.
+
+Ognuno usa la sua key (`THE_ODDS_API_KEY` / `ODDSPAPI_KEY`); imposta quella dei provider che usi.
+
 Questo repository è la versione **standalone**, estratta da Emergent e pronta al deploy
 indipendente:
 

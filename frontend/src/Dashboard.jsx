@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
+const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
+
 function fmtTime(ts) {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -87,6 +89,18 @@ export default function Dashboard() {
     }
   };
 
+  const provider = status?.provider;
+  const setProvider = async (p) => {
+    if (!p || p === provider) return;
+    try {
+      await axios.put(`${API}/settings`, { provider: p });
+      toast.success(`Provider: ${PROVIDER_LABELS[p] || p}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const tracking = !!status?.tracking_enabled;
   const toggleTracking = async () => {
     try {
@@ -139,6 +153,25 @@ export default function Dashboard() {
           <StatusPill label="Last scan" value={status?.last_scan_at ? new Date(status.last_scan_at).toLocaleTimeString() : "—"} icon={<Clock size={14} />} />
           <StatusPill label="Next scan" value={fmtCountdown(nextScanSec)} icon={<Radio size={14} className="text-[#007AFF]" />} mono />
           <StatusPill label="Drop ≥" value={`${threshold.toFixed(1)}%`} icon={<TrendingDown size={14} />} mono />
+
+          {provider === "theoddsapi" && status?.requests_remaining != null && (
+            <StatusPill label="Credits" value={status.requests_remaining} icon={<Activity size={14} />} mono />
+          )}
+
+          <div className="flex border border-white/15" data-testid="provider-switch">
+            {(settings?.providers || ["theoddsapi", "oddspapi"]).map(p => (
+              <button
+                key={p}
+                data-testid={`provider-${p}`}
+                onClick={() => setProvider(p)}
+                className={`px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-bold transition-colors ${
+                  provider === p ? "bg-[#007AFF] text-white" : "text-zinc-400 hover:bg-white/5"
+                }`}
+              >
+                {PROVIDER_LABELS[p] || p}
+              </button>
+            ))}
+          </div>
 
           <button
             data-testid="tracking-toggle"

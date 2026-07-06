@@ -1,70 +1,49 @@
-"""Mock The Odds API data for local testing when no valid key is available.
+"""Mock data for local testing: normalized Pinnacle matches.
 
-Mirrors the shapes the monitor consumes:
-
-* build_mock_sports()  -> /sports list (one active tennis key)
-* build_mock_events()  -> /odds list: tennis events with a Pinnacle bookmaker
-                          offering h2h + totals
-
-Four tennis matches start in the next 60 minutes. Prices are deterministic, so
-consecutive scans return the same values (no drop) unless the caller mutates the
-stored baseline - handy for testing drop detection.
+Both providers return the same normalized shape via get_pinnacle_matches(), so a
+single provider-agnostic mock builder is enough. Four tennis matches start in the
+next 60 minutes with a Pinnacle Match Winner (H2H) + Total Games line each.
+Prices are deterministic, so consecutive scans return the same values (no drop)
+unless the caller mutates the stored baseline - handy for testing drop detection.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-# (home, away, h2h_home, h2h_away, total_line, over, under)
+H2H_MARKET_NAME = "Match Winner"
+TOTALS_MARKET_NAME = "Total Games"
+
+# (tournament, home, away, h2h_home, h2h_away, total_line, over, under)
 _MATCHES = [
-    ("Jannik Sinner", "Carlos Alcaraz", 1.90, 1.95, 22.5, 1.91, 1.94),
-    ("Novak Djokovic", "Daniil Medvedev", 1.55, 2.45, 23.5, 1.88, 1.97),
-    ("Iga Swiatek", "Aryna Sabalenka", 2.05, 1.80, 21.5, 1.95, 1.90),
-    ("Holger Rune", "Alexander Zverev", 2.30, 1.62, 22.5, 1.90, 1.95),
+    ("ATP Mock Open", "Jannik Sinner", "Carlos Alcaraz", 1.90, 1.95, 22.5, 1.91, 1.94),
+    ("ATP Mock Open", "Novak Djokovic", "Daniil Medvedev", 1.55, 2.45, 23.5, 1.88, 1.97),
+    ("WTA Mock Open", "Iga Swiatek", "Aryna Sabalenka", 2.05, 1.80, 21.5, 1.95, 1.90),
+    ("ATP Mock Open", "Holger Rune", "Alexander Zverev", 2.30, 1.62, 22.5, 1.90, 1.95),
 ]
 
-_SPORT_KEY = "tennis_atp_mock"
-_SPORT_TITLE = "ATP Mock Open"
 
-
-def build_mock_sports() -> list[dict]:
-    return [{
-        "key": _SPORT_KEY,
-        "group": "Tennis",
-        "title": _SPORT_TITLE,
-        "active": True,
-        "has_outrights": False,
-    }]
-
-
-def _iso_in(minutes: int) -> str:
-    dt = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def build_mock_events() -> list[dict]:
-    events: list[dict] = []
-    for i, (home, away, hh, ha, line, over, under) in enumerate(_MATCHES):
-        events.append({
-            "id": f"mockevent{i}",
-            "sport_key": _SPORT_KEY,
-            "sport_title": _SPORT_TITLE,
-            "commence_time": _iso_in(10 + i * 12),  # 10, 22, 34, 46 min from now
-            "home_team": home,
-            "away_team": away,
-            "bookmakers": [{
-                "key": "pinnacle",
-                "title": "Pinnacle",
-                "last_update": _iso_in(0),
-                "markets": [
-                    {"key": "h2h", "last_update": _iso_in(0), "outcomes": [
-                        {"name": home, "price": hh},
-                        {"name": away, "price": ha},
-                    ]},
-                    {"key": "totals", "last_update": _iso_in(0), "outcomes": [
-                        {"name": "Over", "price": over, "point": line},
-                        {"name": "Under", "price": under, "point": line},
-                    ]},
-                ],
-            }],
+def build_mock_pinnacle_matches(start_epoch: int, end_epoch: int) -> list[dict]:
+    now = datetime.now(timezone.utc)
+    out: list[dict] = []
+    for i, (tour, home, away, hh, ha, line, over, under) in enumerate(_MATCHES):
+        st = int((now + timedelta(minutes=10 + i * 12)).timestamp())
+        if not (start_epoch < st <= end_epoch):
+            continue
+        out.append({
+            "match_id": f"mock{i}",
+            "tournament": tour,
+            "player1": home,
+            "player2": away,
+            "start_epoch": st,
+            "selections": [
+                {"market_key": "h2h", "market_name": H2H_MARKET_NAME,
+                 "outcome": home, "point": None, "label": home, "price": hh},
+                {"market_key": "h2h", "market_name": H2H_MARKET_NAME,
+                 "outcome": away, "point": None, "label": away, "price": ha},
+                {"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
+                 "outcome": "Over", "point": line, "label": f"Over {line}", "price": over},
+                {"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
+                 "outcome": "Under", "point": line, "label": f"Under {line}", "price": under},
+            ],
         })
-    return events
+    return out

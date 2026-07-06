@@ -75,6 +75,7 @@ api = APIRouter(prefix="/api")
 class SettingsIn(BaseModel):
     drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     tracking_enabled: bool | None = None
+    provider: str | None = None
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
 
@@ -82,6 +83,8 @@ class SettingsIn(BaseModel):
 class SettingsOut(BaseModel):
     drop_threshold: float
     tracking_enabled: bool
+    provider: str
+    providers: list[str]
     telegram_configured: bool
     refresh_minutes: int
 
@@ -94,6 +97,7 @@ class StatusOut(BaseModel):
     refresh_minutes: int
     drop_threshold: float
     tracking_enabled: bool
+    provider: str
     use_mock_data: bool
     requests_remaining: int | None
 
@@ -127,6 +131,7 @@ async def get_status():
         refresh_minutes=REFRESH_MINUTES,
         drop_threshold=monitor.drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
+        provider=monitor.provider,
         use_mock_data=monitor.client.use_mock,
         requests_remaining=monitor.client.requests_remaining,
     )
@@ -138,6 +143,7 @@ async def get_snapshot():
     if not snap:
         return {
             "updated_at": None,
+            "provider": monitor.provider,
             "drop_threshold": monitor.drop_threshold,
             "tracking_enabled": monitor.tracking_enabled,
             "matches": [],
@@ -170,6 +176,8 @@ def _settings_out() -> SettingsOut:
     return SettingsOut(
         drop_threshold=monitor.drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
+        provider=monitor.provider,
+        providers=list(monitor.clients.keys()),
         telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
         refresh_minutes=REFRESH_MINUTES,
     )
@@ -182,9 +190,12 @@ async def get_settings():
 
 @api.put("/settings", response_model=SettingsOut)
 async def update_settings(body: SettingsIn):
+    if body.provider is not None and body.provider not in monitor.clients:
+        raise HTTPException(400, f"Unknown provider: {body.provider}")
     await monitor.save_settings(
         drop_threshold=body.drop_threshold,
         tracking_enabled=body.tracking_enabled,
+        provider=body.provider,
         telegram_token=body.telegram_token,
         telegram_chat_id=body.telegram_chat_id,
     )
@@ -202,7 +213,8 @@ async def telegram_test():
 @api.post("/mock/{enabled}")
 async def toggle_mock(enabled: bool):
     """Toggle mock data mode for demo / when the API key is not active."""
-    monitor.client.use_mock = enabled
+    for c in monitor.clients.values():
+        c.use_mock = enabled
     return {"use_mock_data": monitor.client.use_mock}
 
 

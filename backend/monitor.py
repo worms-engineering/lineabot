@@ -1,20 +1,13 @@
-"""Tennis Pinnacle line-drop monitor - core scan logic (The Odds API).
+"""Tennis Pinnacle line-drop monitor - provider-agnostic core.
 
 Tracks Pinnacle (sharp) prices on the Match Winner (H2H) and Total Games markets
 for tennis matches starting soon, and fires a Telegram alert when a price drops
 by more than the configured threshold between two scans (a "steam" move).
 
-Rationale: when Pinnacle drops, sharp money has moved. Slow soft books (especially
-the Italian ones) still show the old, higher price for a while, so there is time
-to act. Only Pinnacle is read from the odds payload.
-
-Tracking can be turned on/off at runtime (dashboard toggle); while off, scans are
-skipped and no API credits are spent.
-
-Data source: The Odds API v4. Each event carries `id`, `sport_title`,
-`commence_time`, `home_team`, `away_team` and `bookmakers[]`; the Pinnacle
-bookmaker exposes `markets[]` keyed "h2h" (outcomes named by team) and "totals"
-(outcomes "Over"/"Under" with a `point` line).
+The odds source is pluggable: `provider` selects between The Odds API
+(major tournaments, clean data, credit-based) and OddsPapi (full calendar incl.
+Challenger/ITF). Each provider client returns the same normalized shape via
+get_pinnacle_matches(); everything below is provider-agnostic.
 """
 from __future__ import annotations
 
@@ -25,33 +18,24 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from theoddsapi_client import TheOddsApiClient
+from oddspapi_client import OddsPapiClient
 from telegram_client import TelegramClient
 
 logger = logging.getLogger(__name__)
 
-SHARP_BOOK = "pinnacle"
-
-# Only track matches starting within the next hour.
 WINDOW_SECONDS = 60 * 60
-
-DEFAULT_DROP_THRESHOLD = 0.05  # alert when a price drops >= 5% between scans
-
-# Ignore a previous observation older than this when computing a drop (e.g. after
-# tracking was paused): just re-baseline instead of firing a false alert.
+DEFAULT_DROP_THRESHOLD = 0.05
 MAX_BASELINE_AGE_SECONDS = 30 * 60
-# Drop tracked-line state not refreshed in this long (match already started).
 LINE_STATE_TTL_SECONDS = 6 * 60 * 60
 
-H2H_MARKET_NAME = "Match Winner"
-TOTALS_MARKET_NAME = "Total Games"
+DEFAULT_PROVIDER = "theoddsapi"
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_start_epoch(value: Any) -> int | None:
-    """Convert an ISO-8601 timestamp to epoch seconds."""
+def _parse_iso_epoch(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -65,55 +49,15 @@ def _parse_start_epoch(value: Any) -> int | None:
         return None
 
 
-def _pinnacle_bookmaker(event: dict) -> dict | None:
-    for b in event.get("bookmakers") or []:
-        if b.get("key") == SHARP_BOOK:
-            return b
-    return None
-
-
-def _tracked_selections(event: dict) -> list[dict]:
-    """Pinnacle selections to watch: H2H (both players) + Total Games (Over/Under)."""
-    book = _pinnacle_bookmaker(event)
-    if not book:
-        return []
-    out: list[dict] = []
-    for market in book.get("markets") or []:
-        key = market.get("key")
-        if key == "h2h":
-            for o in market.get("outcomes") or []:
-                price, name = o.get("price"), o.get("name")
-                if price is None or not name:
-                    continue
-                out.append({
-                    "market_key": "h2h",
-                    "market_name": H2H_MARKET_NAME,
-                    "outcome": name,
-                    "point": None,
-                    "label": name,
-                    "price": float(price),
-                })
-        elif key == "totals":
-            for o in market.get("outcomes") or []:
-                price, name, point = o.get("price"), o.get("name"), o.get("point")
-                if price is None or not name:
-                    continue
-                out.append({
-                    "market_key": "totals",
-                    "market_name": TOTALS_MARKET_NAME,
-                    "outcome": name,
-                    "point": point,
-                    "label": f"{name} {point}" if point is not None else name,
-                    "price": float(price),
-                })
-    return out
-
-
 class TennisMonitor:
     def __init__(self, db, drop_threshold: float = DEFAULT_DROP_THRESHOLD):
         self.db = db
-        self.client = TheOddsApiClient()
         self.telegram = TelegramClient()
+        self.clients = {
+            "theoddsapi": TheOddsApiClient(),
+            "oddspapi": OddsPapiClient(),
+        }
+        self.provider = DEFAULT_PROVIDER
         self.drop_threshold = drop_threshold
         self.tracking_enabled = True
         self._lock = asyncio.Lock()
@@ -121,8 +65,13 @@ class TennisMonitor:
         self.last_scan_error: str | None = None
         self.last_scan_stats: dict[str, Any] = {}
 
+    @property
+    def client(self):
+        return self.clients[self.provider]
+
     async def close(self):
-        await self.client.close()
+        for c in self.clients.values():
+            await c.close()
 
     async def load_settings(self):
         cfg = await self.db.settings.find_one({"_id": "config"})
@@ -130,6 +79,8 @@ class TennisMonitor:
             self.drop_threshold = float(cfg.get("drop_threshold", self.drop_threshold))
             if "tracking_enabled" in cfg:
                 self.tracking_enabled = bool(cfg["tracking_enabled"])
+            if cfg.get("provider") in self.clients:
+                self.provider = cfg["provider"]
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
             if token:
@@ -139,6 +90,7 @@ class TennisMonitor:
 
     async def save_settings(self, drop_threshold: float | None = None,
                             tracking_enabled: bool | None = None,
+                            provider: str | None = None,
                             telegram_token: str | None = None,
                             telegram_chat_id: str | None = None):
         update: dict[str, Any] = {}
@@ -148,6 +100,11 @@ class TennisMonitor:
         if tracking_enabled is not None:
             self.tracking_enabled = bool(tracking_enabled)
             update["tracking_enabled"] = self.tracking_enabled
+        if provider is not None:
+            if provider not in self.clients:
+                raise ValueError(f"unknown provider: {provider}")
+            self.provider = provider
+            update["provider"] = provider
         if telegram_token is not None:
             self.telegram.token = telegram_token
             update["telegram_token"] = telegram_token
@@ -162,6 +119,10 @@ class TennisMonitor:
     async def set_tracking(self, enabled: bool) -> bool:
         await self.save_settings(tracking_enabled=enabled)
         return self.tracking_enabled
+
+    async def set_provider(self, provider: str) -> str:
+        await self.save_settings(provider=provider)
+        return self.provider
 
     async def scan_once(self, force: bool = False, dry_run_notify: bool = False) -> dict:
         async with self._lock:
@@ -198,30 +159,20 @@ class TennisMonitor:
         now_dt = _now()
         now_ts = int(now_dt.timestamp())
         end_ts = now_ts + WINDOW_SECONDS
+        provider = self.provider
 
-        events = await self.client.get_tennis_events()
-        window: list[dict] = []
-        for ev in events:
-            start_epoch = _parse_start_epoch(ev.get("commence_time"))
-            if start_epoch is None or not (now_ts < start_epoch <= end_ts):
-                continue
-            ev["_startEpoch"] = start_epoch
-            window.append(ev)
+        matches = await self.client.get_pinnacle_matches(now_ts, end_ts)
 
         matches_payload: list[dict] = []
         drops_found = 0
         alerts_sent = 0
 
-        for ev in window:
-            event_id = ev.get("id")
-            selections = _tracked_selections(ev)
-            if not selections:
-                continue
-
+        for match in matches:
+            match_id = match.get("match_id")
             line_rows: list[dict] = []
-            for sel in selections:
-                point_key = "" if sel["point"] is None else sel["point"]
-                key = f"{event_id}:{sel['market_key']}:{sel['outcome']}:{point_key}"
+            for sel in match.get("selections") or []:
+                point_key = "" if sel.get("point") is None else sel["point"]
+                key = f"{provider}:{match_id}:{sel['market_key']}:{sel['outcome']}:{point_key}"
                 prev = await self.db.line_state.find_one({"_id": key})
                 curr = sel["price"]
                 open_price = curr
@@ -235,7 +186,7 @@ class TennisMonitor:
                     first_seen = prev.get("first_seen_at") or first_seen
                     prev_price = prev.get("price")
                     fresh = True
-                    prev_epoch = _parse_start_epoch(prev.get("updated_at"))
+                    prev_epoch = _parse_iso_epoch(prev.get("updated_at"))
                     if prev_epoch is not None:
                         fresh = (now_ts - prev_epoch) <= MAX_BASELINE_AGE_SECONDS
                     if prev_price and curr < prev_price:
@@ -255,16 +206,15 @@ class TennisMonitor:
                         "open_price": open_price,
                         "first_seen_at": first_seen,
                         "updated_at": now_dt.isoformat(),
-                        "event_id": event_id,
+                        "match_id": match_id,
                     }},
                     upsert=True,
                 )
 
                 if is_drop:
                     drops_found += 1
-                    text = self._format_drop_alert(
-                        ev, sel, prev_price, curr, drop_last, drop_from_open
-                    )
+                    text = self._format_drop_alert(match, sel, prev_price, curr,
+                                                   drop_last, drop_from_open)
                     tg_result = {"ok": False}
                     if not dry_run_notify:
                         try:
@@ -274,10 +224,11 @@ class TennisMonitor:
                     await self.db.alerts.insert_one({
                         "_id": str(uuid.uuid4()),
                         "type": "drop",
+                        "provider": provider,
                         "created_at": now_dt.isoformat(),
-                        "player1": ev.get("home_team"),
-                        "player2": ev.get("away_team"),
-                        "tournament": ev.get("sport_title"),
+                        "player1": match.get("player1"),
+                        "player2": match.get("player2"),
+                        "tournament": match.get("tournament"),
                         "market_name": sel["market_name"],
                         "label": sel["label"],
                         "prev_price": round(prev_price, 3) if prev_price else None,
@@ -302,11 +253,11 @@ class TennisMonitor:
 
             if line_rows:
                 matches_payload.append({
-                    "event_id": event_id,
-                    "start_time": ev.get("_startEpoch"),
-                    "tournament": ev.get("sport_title"),
-                    "player1": ev.get("home_team"),
-                    "player2": ev.get("away_team"),
+                    "match_id": match_id,
+                    "start_time": match.get("start_epoch"),
+                    "tournament": match.get("tournament"),
+                    "player1": match.get("player1"),
+                    "player2": match.get("player2"),
                     "lines": line_rows,
                 })
 
@@ -320,6 +271,7 @@ class TennisMonitor:
             {"_id": "latest"},
             {"$set": {
                 "updated_at": now_dt.isoformat(),
+                "provider": provider,
                 "drop_threshold": self.drop_threshold,
                 "tracking_enabled": self.tracking_enabled,
                 "matches": matches_payload,
@@ -328,6 +280,7 @@ class TennisMonitor:
         )
 
         return {
+            "provider": provider,
             "fixtures_tracked": len(matches_payload),
             "selections_tracked": sum(len(m["lines"]) for m in matches_payload),
             "drops_found": drops_found,
@@ -335,16 +288,16 @@ class TennisMonitor:
             "requests_remaining": self.client.requests_remaining,
         }
 
-    def _format_drop_alert(self, ev: dict, sel: dict, prev_price: float,
+    def _format_drop_alert(self, match: dict, sel: dict, prev_price: float,
                            curr: float, drop_last: float, drop_from_open: float) -> str:
-        start_ts = ev.get("_startEpoch")
+        start_ts = match.get("start_epoch")
         start_str = ""
         if start_ts:
             start_str = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%H:%M UTC")
         return (
             f"<b>⬇️ PINNACLE DROP — Tennis</b>\n"
-            f"{ev.get('home_team')} vs {ev.get('away_team')}\n"
-            f"{ev.get('sport_title') or ''} · start {start_str}\n"
+            f"{match.get('player1')} vs {match.get('player2')}\n"
+            f"{match.get('tournament') or ''} · start {start_str}\n"
             f"{sel['market_name']} — <b>{sel['label']}</b>\n"
             f"{prev_price:.2f} → <b>{curr:.2f}</b> (<b>-{drop_last * 100:.1f}%</b>)\n"
             f"da apertura: -{drop_from_open * 100:.1f}%"
