@@ -19,8 +19,8 @@ indipendente:
 tennis-monitor/
 ├── backend/          # FastAPI app (deploy su Render)
 │   ├── server.py             # entrypoint FastAPI (uvicorn server:app)
-│   ├── monitor.py            # logica di scan / calcolo edge / alert
-│   ├── oddspapi_client.py    # client OddsPapi v4 (+ modalità mock)
+│   ├── monitor.py            # logica di scan / rilevamento cali di quota / alert
+│   ├── theoddsapi_client.py  # client The Odds API (+ modalità mock)
 │   ├── telegram_client.py    # invio messaggi Telegram
 │   ├── mock_data.py          # dati demo quando non c'è una key valida
 │   ├── requirements.txt
@@ -41,10 +41,10 @@ tennis-monitor/
 
 - Un database **MongoDB**. In locale va bene `mongodb://localhost:27017`; in produzione
   usa **MongoDB Atlas** (free tier M0) e prendi la connection string `mongodb+srv://...`.
-- Una **key OddsPapi v4** valida (altrimenti usa la modalità demo/mock, vedi sotto).
+- Una **key The Odds API** valida (the-odds-api.com; altrimenti usa la modalità demo/mock).
 - Un **bot Telegram** (token da @BotFather) e il tuo **chat id**.
 
-> ⚠️ **Sicurezza**: nel file originale erano presenti key OddsPapi e token Telegram in
+> ⚠️ **Sicurezza**: nel file originale erano presenti la key API e i token Telegram in
 > chiaro. Sono stati riportati in `backend/.env` solo per lo sviluppo locale. **Rigenera /
 > ruota queste credenziali** prima di andare in produzione e impostale come variabili
 > d'ambiente segrete su Render — non committarle mai su un repo pubblico.
@@ -63,7 +63,7 @@ uvicorn server:app --reload --port 8000
 ```
 API su `http://localhost:8000`, docs su `http://localhost:8000/docs`.
 
-Per provare senza key OddsPapi, imposta `USE_MOCK_DATA="true"` in `backend/.env`
+Per provare senza key, imposta `USE_MOCK_DATA="true"` in `backend/.env`
 (oppure usa il bottone **Enable demo data** nella UI).
 
 ### Frontend
@@ -86,7 +86,7 @@ Puoi usare il blueprint incluso (`render.yaml`) oppure configurare a mano.
 2. Su Render: **New → Blueprint**, seleziona il repo. Render legge `render.yaml`.
 3. Imposta le variabili marcate `sync: false` come **secret** nella dashboard:
    - `MONGO_URL` — la connection string di MongoDB Atlas
-   - `ODDSPAPI_KEY`
+   - `THE_ODDS_API_KEY` (la legacy `ODDSPAPI_KEY` è accettata come fallback)
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
    - `CORS_ORIGINS` — l'URL Vercel del frontend (es. `https://your-app.vercel.app`)
@@ -105,7 +105,7 @@ Lo scheduler (APScheduler) gira **dentro il processo web** e scansiona ogni `REF
 (default 10). Ogni scansione è gated dal **toggle di tracciamento**:
 
 - **Tracking ON** → scansiona Pinnacle e rileva i cali di quota.
-- **Tracking OFF** → lo scan viene saltato, **zero chiamate OddsPapi** (utile es. di notte).
+- **Tracking OFF** → lo scan viene saltato, **zero crediti API** (utile es. di notte).
 
 Puoi accendere/spegnere dal pulsante in dashboard o con `POST /api/tracking {"enabled": true|false}`.
 `REFRESH_MINUTES = 0` disattiva del tutto lo scheduler (scan solo on-demand via `/api/refresh`).
@@ -116,7 +116,7 @@ precedente), quindi conviene tenerlo attivo di continuo:
 - **Piano Starter** ($7/mese) — nel `render.yaml` è già `plan: starter`: il servizio non
   dorme e lo scheduler gira 24/7.
 - **Piano Free** — il servizio va in sleep dopo ~15 min: per tenerlo sveglio usa un ping
-  periodico su `GET /` (health, **0 chiamate OddsPapi**) da un servizio esterno tipo
+  periodico su `GET /` (health, **0 crediti API**) da un servizio esterno tipo
   cron-job.org ogni ~5-10 min. Lo scanning lo fa lo scheduler interno; il ping serve solo a
   non far addormentare il servizio.
 
@@ -159,10 +159,10 @@ Se hai anche un dominio custom, puoi mettere più origin separati da virgola.
 ## 6. Checklist finale
 
 - [ ] MongoDB Atlas creato e connection string in `MONGO_URL` su Render
-- [ ] Credenziali OddsPapi e Telegram **rigenerate** e messe come secret su Render
+- [ ] Credenziali The Odds API e Telegram **rigenerate** e messe come secret su Render
 - [ ] Backend Render risponde su `/` e `/api/status`
 - [ ] `VITE_BACKEND_URL` impostato su Vercel = URL del backend
 - [ ] `CORS_ORIGINS` su Render = URL del frontend Vercel
 - [ ] `REFRESH_MINUTES` impostato (es. 3-5) e, sul piano Free, cron esterno su `GET /` per
-      tenere sveglio il servizio (0 chiamate OddsPapi)
+      tenere sveglio il servizio (0 crediti API)
 - [ ] Tracciamento acceso/spento dal pulsante in dashboard (spegnilo per non consumare call)

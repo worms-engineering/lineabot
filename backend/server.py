@@ -95,6 +95,7 @@ class StatusOut(BaseModel):
     drop_threshold: float
     tracking_enabled: bool
     use_mock_data: bool
+    requests_remaining: int | None
 
 
 class TrackingIn(BaseModel):
@@ -126,7 +127,8 @@ async def get_status():
         refresh_minutes=REFRESH_MINUTES,
         drop_threshold=monitor.drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
-        use_mock_data=monitor.oddspapi.use_mock,
+        use_mock_data=monitor.client.use_mock,
+        requests_remaining=monitor.client.requests_remaining,
     )
 
 
@@ -199,9 +201,9 @@ async def telegram_test():
 
 @api.post("/mock/{enabled}")
 async def toggle_mock(enabled: bool):
-    """Toggle mock data mode for demo / when OddsPapi key is not active."""
-    monitor.oddspapi.use_mock = enabled
-    return {"use_mock_data": monitor.oddspapi.use_mock}
+    """Toggle mock data mode for demo / when the API key is not active."""
+    monitor.client.use_mock = enabled
+    return {"use_mock_data": monitor.client.use_mock}
 
 
 app.include_router(api)

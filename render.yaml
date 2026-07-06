@@ -17,7 +17,7 @@ services:
       # Set these as secrets in the Render dashboard (do NOT commit real values):
       - key: MONGO_URL
         sync: false
-      - key: ODDSPAPI_KEY
+      - key: THE_ODDS_API_KEY
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
