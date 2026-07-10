@@ -3,7 +3,7 @@ import axios from "axios";
 import { Toaster, toast } from "sonner";
 import {
   RefreshCw, Settings, Send, Clock, Radio, TrendingDown,
-  AlertCircle, CheckCircle2, XCircle, Activity, Filter, Power,
+  AlertCircle, CheckCircle2, XCircle, Activity, Filter, Power, Volume2, VolumeX,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
@@ -45,6 +45,11 @@ export default function Dashboard() {
   const [onlyDrops, setOnlyDrops] = useState(false);
   const [now, setNow] = useState(Date.now());
   const scanningRef = useRef(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    try { return localStorage.getItem("soundEnabled") !== "false"; } catch { return true; }
+  });
+  const audioCtxRef = useRef(null);
+  const lastAlertRef = useRef(null);
 
   const loadAll = useCallback(async () => {
     try {
@@ -72,6 +77,73 @@ export default function Dashboard() {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // Browsers block audio until a user gesture: unlock on the first interaction.
+  useEffect(() => {
+    const unlock = () => {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!audioCtxRef.current && AC) audioCtxRef.current = new AC();
+        if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+          audioCtxRef.current.resume();
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("pointerdown", unlock, { once: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
+
+  // Synthesized two-tone chime (no audio file needed).
+  const playChime = useCallback(() => {
+    try {
+      let ctx = audioCtxRef.current;
+      if (!ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        ctx = new AC();
+        audioCtxRef.current = ctx;
+      }
+      if (ctx.state === "suspended") ctx.resume();
+      const t0 = ctx.currentTime;
+      [880, 1320].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const t = t0 + i * 0.16;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.3, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.26);
+      });
+    } catch (e) {
+      /* audio not available / blocked */
+    }
+  }, []);
+
+  const toggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    try { localStorage.setItem("soundEnabled", next ? "true" : "false"); } catch { /* ignore */ }
+    if (next) playChime();  // user gesture: unlocks audio + confirms
+  };
+
+  // Ring when a new alert appears (newest alert timestamp changes).
+  useEffect(() => {
+    if (!alerts || alerts.length === 0) return;
+    const newest = alerts[0].created_at;
+    if (lastAlertRef.current === null) {
+      lastAlertRef.current = newest;  // baseline on first load: don't ring
+      return;
+    }
+    if (newest !== lastAlertRef.current) {
+      lastAlertRef.current = newest;
+      if (soundEnabled) playChime();
+    }
+  }, [alerts, soundEnabled, playChime]);
 
   const manualRefresh = async () => {
     if (scanningRef.current) return;
@@ -158,7 +230,7 @@ export default function Dashboard() {
             <div className={`w-2 h-2 rounded-full ${tracking ? "bg-[#32D74B] pulse-dot" : "bg-zinc-600"}`} />
             <span className="font-display uppercase tracking-tight text-xl font-bold">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
           </div>
-          <span className="text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis · H2H &amp; Total Games</span>
+          <span className="text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis &amp; Basket · H2H &amp; Totals</span>
         </div>
 
         <div className="flex items-center gap-6">
@@ -208,6 +280,15 @@ export default function Dashboard() {
             }`}
           >
             🏀 {basketball ? "ON" : "OFF"}
+          </button>
+
+          <button
+            data-testid="sound-toggle"
+            onClick={toggleSound}
+            title={soundEnabled ? "Suono alert attivo (clic per disattivare)" : "Suono alert disattivato (clic per attivare)"}
+            className={`p-1.5 border border-white/15 transition-colors hover:bg-white/5 ${soundEnabled ? "text-white" : "text-zinc-500"}`}
+          >
+            {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
           </button>
 
           {status?.use_mock_data && (
@@ -310,7 +391,7 @@ export default function Dashboard() {
                       </div>
                       <div>
                         {tracking
-                          ? <>Monitoro i match tennis con inizio nei prossimi 60 minuti. Prossimo controllo tra <span className="text-white">{fmtCountdown(nextScanSec)}</span>.</>
+                          ? <>Monitoro i match con inizio nei prossimi 60 minuti. Prossimo controllo tra <span className="text-white">{fmtCountdown(nextScanSec)}</span>.</>
                           : "Attiva il tracciamento dal pulsante in alto per iniziare a monitorare le quote."}
                       </div>
                     </td>
