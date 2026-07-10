@@ -48,6 +48,9 @@ export default function Dashboard() {
   const [soundEnabled, setSoundEnabled] = useState(() => {
     try { return localStorage.getItem("soundEnabled") !== "false"; } catch { return true; }
   });
+  const [customSound, setCustomSound] = useState(() => {
+    try { return localStorage.getItem("alertSound") || null; } catch { return null; }
+  });
   const audioCtxRef = useRef(null);
   const lastAlertRef = useRef(null);
 
@@ -124,11 +127,49 @@ export default function Dashboard() {
     }
   }, []);
 
+  // Play the uploaded custom sound if set, otherwise the synthesized chime.
+  const playAlertSound = useCallback(() => {
+    if (customSound) {
+      try {
+        const a = new Audio(customSound);
+        a.play().catch(() => {});
+        return;
+      } catch { /* fall through to chime */ }
+    }
+    playChime();
+  }, [customSound, playChime]);
+
   const toggleSound = () => {
     const next = !soundEnabled;
     setSoundEnabled(next);
     try { localStorage.setItem("soundEnabled", next ? "true" : "false"); } catch { /* ignore */ }
-    if (next) playChime();  // user gesture: unlocks audio + confirms
+    if (next) playAlertSound();  // user gesture: unlocks audio + confirms
+  };
+
+  const uploadSound = (file) => {
+    if (!file) return;
+    if (!file.type.startsWith("audio/")) { toast.error("Serve un file audio"); return; }
+    if (file.size > 1024 * 1024) { toast.error("File troppo grande (max ~1 MB). Usa un clip breve."); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      try {
+        localStorage.setItem("alertSound", dataUrl);
+      } catch {
+        toast.error("Impossibile salvare: file troppo grande per il browser.");
+        return;
+      }
+      setCustomSound(dataUrl);
+      toast.success("Suono alert personalizzato impostato");
+      try { new Audio(dataUrl).play().catch(() => {}); } catch { /* ignore */ }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const resetSound = () => {
+    try { localStorage.removeItem("alertSound"); } catch { /* ignore */ }
+    setCustomSound(null);
+    toast.info("Suono ripristinato al default");
   };
 
   // Ring when a new alert appears (newest alert timestamp changes).
@@ -141,9 +182,9 @@ export default function Dashboard() {
     }
     if (newest !== lastAlertRef.current) {
       lastAlertRef.current = newest;
-      if (soundEnabled) playChime();
+      if (soundEnabled) playAlertSound();
     }
-  }, [alerts, soundEnabled, playChime]);
+  }, [alerts, soundEnabled, playAlertSound]);
 
   const manualRefresh = async () => {
     if (scanningRef.current) return;
@@ -311,7 +352,14 @@ export default function Dashboard() {
             {refreshing ? "Scanning" : "Refresh"}
           </Button>
 
-          <SettingsDialog settings={settings} onSaved={loadAll} />
+          <SettingsDialog
+            settings={settings}
+            onSaved={loadAll}
+            customSound={customSound}
+            onUploadSound={uploadSound}
+            onResetSound={resetSound}
+            onPreviewSound={playAlertSound}
+          />
         </div>
       </header>
 
@@ -507,7 +555,7 @@ function DropBadge({ drop, isDrop }) {
   );
 }
 
-function SettingsDialog({ settings, onSaved }) {
+function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onResetSound, onPreviewSound }) {
   const [open, setOpen] = useState(false);
   const [drop, setDrop] = useState(5);
   const [token, setToken] = useState("");
@@ -568,6 +616,31 @@ function SettingsDialog({ settings, onSaved }) {
             </div>
             <Slider data-testid="settings-drop-slider" min={1} max={15} step={0.5} value={[drop]} onValueChange={(v) => setDrop(v[0])} />
             <div className="text-[10px] text-zinc-600 mt-2">Alert quando una quota Pinnacle cala di almeno questa % tra due scansioni.</div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-widest text-zinc-400">Suono alert</div>
+            <div className="text-[10px] text-zinc-600">Carica un file audio breve (max ~1 MB). Vuoto = suono di default.</div>
+            <input
+              type="file"
+              accept="audio/*"
+              data-testid="settings-sound-file"
+              onChange={(e) => { onUploadSound(e.target.files && e.target.files[0]); e.target.value = ""; }}
+              className="block w-full text-xs text-zinc-400 file:mr-3 file:border file:border-white/20 file:bg-white/5 file:text-white file:px-3 file:py-1 file:text-xs file:uppercase file:tracking-widest hover:file:bg-white/10"
+            />
+            <div className="flex gap-2">
+              <Button data-testid="settings-sound-preview" onClick={onPreviewSound} variant="outline" className="rounded-none border-white/20 text-white text-xs uppercase tracking-widest">
+                Prova
+              </Button>
+              {customSound && (
+                <Button data-testid="settings-sound-reset" onClick={onResetSound} variant="outline" className="rounded-none border-white/20 text-zinc-400 text-xs uppercase tracking-widest">
+                  Ripristina default
+                </Button>
+              )}
+            </div>
+            {customSound && (
+              <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Suono personalizzato attivo</div>
+            )}
           </div>
 
           <div className="space-y-2">
