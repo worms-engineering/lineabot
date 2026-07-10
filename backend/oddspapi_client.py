@@ -24,17 +24,21 @@ import mock_data
 
 BASE_URL = "https://api.oddspapi.io/v4"
 TENNIS_SPORT_ID = 12
+# Canonical sport key -> OddsPapi sportId.
+SPORT_IDS = {"tennis": 12, "basketball": 11}
 TOURNAMENT_CHUNK_SIZE = 5
 _BOOKMAKER_CHUNK_LIMITS = {"betfair-ex": 3}
 _MIN_REQUEST_INTERVAL = 1.05
 _MAX_RETRIES = 5
 
 SHARP_BOOK = "pinnacle"
-MIN_GAMES_LINE = 15.0
+# Full-match/full-game totals sit above per-set (tennis) lines; combined with the
+# "/0/totals" period check this isolates the whole-event total from quarters/sets.
+MIN_TOTAL_LINE = 15.0
 _TOTALS_OUTCOME_RE = re.compile(r"^(\d+(?:\.\d+)?)/(over|under)$")
 
 H2H_MARKET_NAME = "Match Winner"
-TOTALS_MARKET_NAME = "Total Games"
+TOTALS_MARKET_NAME = "Total"
 
 
 def _to_iso(epoch: int) -> str:
@@ -57,9 +61,18 @@ def _single_book_odds(fixture: dict) -> dict | None:
     return next(iter((fixture.get("bookmakerOdds") or {}).values()), None)
 
 
-def _is_real_tennis(fx: dict) -> bool:
+def _is_real_event(fx: dict) -> bool:
+    """Exclude simulated-reality / virtual events: Pinnacle never prices them."""
     text = f"{fx.get('categoryName') or ''} {fx.get('tournamentName') or ''}".lower()
     return not ("simulated" in text or "virtual" in text or "srl " in text)
+
+
+def _matches_whitelist(fx: dict, patterns) -> bool:
+    """True if the fixture's tournament name contains any whitelist substring."""
+    if not patterns:
+        return True
+    name = (fx.get("tournamentName") or "").lower()
+    return any(p in name for p in patterns)
 
 
 def _pinnacle_h2h(book_odds: dict) -> dict | None:
@@ -86,6 +99,10 @@ def _pinnacle_main_total(book_odds: dict) -> dict | None:
     for market in (book_odds.get("markets") or {}).values():
         if market.get("marketActive") is False:
             continue
+        # "/0/totals" = whole-event period: excludes tennis set totals and
+        # basketball quarter/half totals (which use /1, /2, ...).
+        if not (market.get("bookmakerMarketId") or "").endswith("/0/totals"):
+            continue
         sides: dict[str, dict] = {}
         is_main = False
         for outcome in (market.get("outcomes") or {}).values():
@@ -97,7 +114,7 @@ def _pinnacle_main_total(book_odds: dict) -> dict | None:
             if not m:
                 continue
             line = float(m.group(1))
-            if line < MIN_GAMES_LINE:
+            if line < MIN_TOTAL_LINE:
                 continue
             if player.get("mainLine"):
                 is_main = True
@@ -189,14 +206,22 @@ class OddsPapiClient:
                 fixtures.extend(data)
         return fixtures
 
-    async def get_pinnacle_matches(self, start_epoch: int, end_epoch: int) -> list[dict]:
-        """Normalized Pinnacle matches (H2H + main Total Games) starting in the window."""
-        if self.use_mock:
-            return mock_data.build_mock_pinnacle_matches(start_epoch, end_epoch)
+    async def get_pinnacle_matches(self, sport: str, start_epoch: int, end_epoch: int,
+                                   tournament_filter=None) -> list[dict]:
+        """Normalized Pinnacle matches (H2H + main total) for a sport in the window.
 
+        tournament_filter: optional list of lowercase substrings; only tournaments
+        whose name contains one are kept (e.g. ["nba", "wnba", "eurobasket"]).
+        """
+        if self.use_mock:
+            return mock_data.build_mock_pinnacle_matches(sport, start_epoch, end_epoch)
+
+        sport_id = SPORT_IDS.get(sport, TENNIS_SPORT_ID)
         window: list[dict] = []
-        for fx in await self.get_fixtures(start_epoch, end_epoch):
-            if not fx.get("hasOdds") or not _is_real_tennis(fx):
+        for fx in await self.get_fixtures(start_epoch, end_epoch, sport_id):
+            if not fx.get("hasOdds") or not _is_real_event(fx):
+                continue
+            if not _matches_whitelist(fx, tournament_filter):
                 continue
             st = _iso_epoch(fx.get("startTime"))
             if st is None or not (start_epoch < st <= end_epoch):

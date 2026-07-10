@@ -20,12 +20,13 @@ import httpx
 import mock_data
 
 BASE_URL = "https://api.the-odds-api.com/v4"
-TENNIS_PREFIX = "tennis_"
+# Canonical sport key -> The Odds API sport-key prefix.
+SPORT_PREFIXES = {"tennis": "tennis_", "basketball": "basketball_"}
 DEFAULT_REGIONS = "eu"
 DEFAULT_MARKETS = "h2h,totals"
 
 H2H_MARKET_NAME = "Match Winner"
-TOTALS_MARKET_NAME = "Total Games"
+TOTALS_MARKET_NAME = "Total"
 
 
 def _iso_epoch(value) -> int | None:
@@ -77,10 +78,10 @@ class TheOddsApiClient:
         data = await self._get("/sports", {})
         return data if isinstance(data, list) else []
 
-    async def get_tennis_events(self, regions=DEFAULT_REGIONS, markets=DEFAULT_MARKETS) -> list[dict]:
+    async def get_events(self, prefix: str, regions=DEFAULT_REGIONS, markets=DEFAULT_MARKETS) -> list[dict]:
         sports = await self.get_sports()
         keys = [s["key"] for s in sports
-                if s.get("active") and str(s.get("key", "")).startswith(TENNIS_PREFIX)]
+                if s.get("active") and str(s.get("key", "")).startswith(prefix)]
         events: list[dict] = []
         for key in keys:
             try:
@@ -96,16 +97,22 @@ class TheOddsApiClient:
                 events.extend(data)
         return events
 
-    async def get_pinnacle_matches(self, start_epoch: int, end_epoch: int) -> list[dict]:
-        """Normalized Pinnacle matches (H2H + Total Games) starting in the window."""
+    async def get_pinnacle_matches(self, sport: str, start_epoch: int, end_epoch: int,
+                                   tournament_filter=None) -> list[dict]:
+        """Normalized Pinnacle matches (H2H + totals) for a sport in the window."""
         if self.use_mock:
-            return mock_data.build_mock_pinnacle_matches(start_epoch, end_epoch)
-        events = await self.get_tennis_events()
+            return mock_data.build_mock_pinnacle_matches(sport, start_epoch, end_epoch)
+        prefix = SPORT_PREFIXES.get(sport, "tennis_")
+        events = await self.get_events(prefix)
         out: list[dict] = []
         for ev in events:
             st = _iso_epoch(ev.get("commence_time"))
             if st is None or not (start_epoch < st <= end_epoch):
                 continue
+            if tournament_filter:
+                name = (ev.get("sport_title") or "").lower()
+                if not any(p in name for p in tournament_filter):
+                    continue
             book = next((b for b in ev.get("bookmakers") or []
                          if b.get("key") == "pinnacle"), None)
             if not book:

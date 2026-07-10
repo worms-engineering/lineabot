@@ -18,6 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀" };
 
 function fmtTime(ts) {
   if (!ts) return "—";
@@ -112,6 +113,17 @@ export default function Dashboard() {
     }
   };
 
+  const basketball = !!status?.basketball_enabled;
+  const toggleBasketball = async () => {
+    try {
+      await axios.put(`${API}/settings`, { basketball_enabled: !basketball });
+      toast[!basketball ? "success" : "info"](`Basket ${!basketball ? "attivato" : "disattivato"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const nextScanSec = useMemo(() => {
     if (!status?.next_scan_at) return null;
     return Math.max(0, Math.floor((new Date(status.next_scan_at).getTime() - now) / 1000));
@@ -183,6 +195,19 @@ export default function Dashboard() {
             }`}
           >
             <Power size={14} /> {tracking ? "Tracking ON" : "Tracking OFF"}
+          </button>
+
+          <button
+            data-testid="basketball-toggle"
+            onClick={toggleBasketball}
+            title="Traccia anche il basket (NBA/WNBA/EuroBasket, via OddsPapi)"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              basketball
+                ? "border-[#FF9F0A]/40 bg-[#FF9F0A]/10 text-[#FF9F0A] hover:bg-[#FF9F0A]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🏀 {basketball ? "ON" : "OFF"}
           </button>
 
           {status?.use_mock_data && (
@@ -302,7 +327,7 @@ export default function Dashboard() {
                     <Td>
                       <div className="flex flex-col leading-tight">
                         <span className="text-white">{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</span>
-                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest">{r.match.tournament}</span>
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest">{r.match.sport_emoji} {r.match.tournament}</span>
                       </div>
                     </Td>
                     <Td className="text-zinc-400 text-xs uppercase tracking-widest">{r.market_name}</Td>
@@ -332,6 +357,7 @@ export default function Dashboard() {
                 <span className="text-zinc-600">{new Date(a.created_at).toLocaleTimeString()}</span>
                 {a.telegram_ok ? <CheckCircle2 size={12} className="text-[#32D74B] shrink-0 mt-0.5" /> : <XCircle size={12} className="text-[#FF3B30] shrink-0 mt-0.5" />}
                 <span className="text-zinc-300">
+                  {SPORT_EMOJI[a.sport] ? `${SPORT_EMOJI[a.sport]} ` : ""}
                   <span className="text-white">{a.player1} vs {a.player2}</span>
                   <span className="text-zinc-600"> · {a.market_name} — </span>
                   <span className="text-white">{a.label}</span>

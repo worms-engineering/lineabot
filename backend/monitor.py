@@ -30,6 +30,16 @@ LINE_STATE_TTL_SECONDS = 6 * 60 * 60
 
 DEFAULT_PROVIDER = "theoddsapi"
 
+# Basketball is tracked only on OddsPapi (the provider with basketball parsing),
+# restricted to these competitions (tournament-name substrings, case-insensitive):
+# NBA + NBA Summer League + WNBA + EuroBasket. Edit to taste.
+BASKETBALL_WHITELIST = ["nba", "wnba", "eurobasket"]
+
+SPORT_META = {
+    "tennis": {"label": "Tennis", "emoji": "🎾"},
+    "basketball": {"label": "Basket", "emoji": "🏀"},
+}
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -60,6 +70,7 @@ class TennisMonitor:
         self.provider = DEFAULT_PROVIDER
         self.drop_threshold = drop_threshold
         self.tracking_enabled = True
+        self.basketball_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -79,6 +90,8 @@ class TennisMonitor:
             self.drop_threshold = float(cfg.get("drop_threshold", self.drop_threshold))
             if "tracking_enabled" in cfg:
                 self.tracking_enabled = bool(cfg["tracking_enabled"])
+            if "basketball_enabled" in cfg:
+                self.basketball_enabled = bool(cfg["basketball_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             token = cfg.get("telegram_token")
@@ -90,6 +103,7 @@ class TennisMonitor:
 
     async def save_settings(self, drop_threshold: float | None = None,
                             tracking_enabled: bool | None = None,
+                            basketball_enabled: bool | None = None,
                             provider: str | None = None,
                             telegram_token: str | None = None,
                             telegram_chat_id: str | None = None):
@@ -100,6 +114,9 @@ class TennisMonitor:
         if tracking_enabled is not None:
             self.tracking_enabled = bool(tracking_enabled)
             update["tracking_enabled"] = self.tracking_enabled
+        if basketball_enabled is not None:
+            self.basketball_enabled = bool(basketball_enabled)
+            update["basketball_enabled"] = self.basketball_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -155,13 +172,32 @@ class TennisMonitor:
                 })
                 return {"error": str(e)}
 
+    def _scan_plan(self) -> list[tuple]:
+        """(sport, provider_key, tournament_whitelist) to scan this cycle."""
+        plan = [("tennis", self.provider, None)]
+        if self.basketball_enabled:
+            plan.append(("basketball", "oddspapi", BASKETBALL_WHITELIST))
+        return plan
+
     async def _scan_impl(self, dry_run_notify: bool) -> dict:
         now_dt = _now()
         now_ts = int(now_dt.timestamp())
         end_ts = now_ts + WINDOW_SECONDS
-        provider = self.provider
 
-        matches = await self.client.get_pinnacle_matches(now_ts, end_ts)
+        matches: list[dict] = []
+        sport_errors: dict[str, str] = {}
+        for sport, prov, whitelist in self._scan_plan():
+            client = self.clients[prov]
+            try:
+                raw = await client.get_pinnacle_matches(sport, now_ts, end_ts, whitelist)
+            except Exception as e:
+                logger.warning("scan sport=%s provider=%s failed: %s", sport, prov, e)
+                sport_errors[sport] = str(e)
+                continue
+            for m in raw:
+                m["sport"] = sport
+                m["provider"] = prov
+                matches.append(m)
 
         matches_payload: list[dict] = []
         drops_found = 0
@@ -169,10 +205,12 @@ class TennisMonitor:
 
         for match in matches:
             match_id = match.get("match_id")
+            provider = match.get("provider", self.provider)
+            sport = match.get("sport", "tennis")
             line_rows: list[dict] = []
             for sel in match.get("selections") or []:
                 point_key = "" if sel.get("point") is None else sel["point"]
-                key = f"{provider}:{match_id}:{sel['market_key']}:{sel['outcome']}:{point_key}"
+                key = f"{provider}:{sport}:{match_id}:{sel['market_key']}:{sel['outcome']}:{point_key}"
                 prev = await self.db.line_state.find_one({"_id": key})
                 curr = sel["price"]
                 open_price = curr
@@ -225,6 +263,7 @@ class TennisMonitor:
                         "_id": str(uuid.uuid4()),
                         "type": "drop",
                         "provider": provider,
+                        "sport": sport,
                         "created_at": now_dt.isoformat(),
                         "player1": match.get("player1"),
                         "player2": match.get("player2"),
@@ -252,8 +291,12 @@ class TennisMonitor:
                 })
 
             if line_rows:
+                meta = SPORT_META.get(sport, {})
                 matches_payload.append({
                     "match_id": match_id,
+                    "sport": sport,
+                    "sport_label": meta.get("label", sport),
+                    "sport_emoji": meta.get("emoji", ""),
                     "start_time": match.get("start_epoch"),
                     "tournament": match.get("tournament"),
                     "player1": match.get("player1"),
@@ -271,7 +314,8 @@ class TennisMonitor:
             {"_id": "latest"},
             {"$set": {
                 "updated_at": now_dt.isoformat(),
-                "provider": provider,
+                "provider": self.provider,
+                "basketball_enabled": self.basketball_enabled,
                 "drop_threshold": self.drop_threshold,
                 "tracking_enabled": self.tracking_enabled,
                 "matches": matches_payload,
@@ -279,14 +323,17 @@ class TennisMonitor:
             upsert=True,
         )
 
-        return {
-            "provider": provider,
+        stats = {
+            "provider": self.provider,
             "fixtures_tracked": len(matches_payload),
             "selections_tracked": sum(len(m["lines"]) for m in matches_payload),
             "drops_found": drops_found,
             "alerts_sent": alerts_sent,
             "requests_remaining": self.client.requests_remaining,
         }
+        if sport_errors:
+            stats["sport_errors"] = sport_errors
+        return stats
 
     def _format_drop_alert(self, match: dict, sel: dict, prev_price: float,
                            curr: float, drop_last: float, drop_from_open: float) -> str:
@@ -294,8 +341,10 @@ class TennisMonitor:
         start_str = ""
         if start_ts:
             start_str = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%H:%M UTC")
+        meta = SPORT_META.get(match.get("sport"), {})
+        sport_tag = f"{meta.get('emoji', '')} {meta.get('label', 'Tennis')}".strip()
         return (
-            f"<b>⬇️ PINNACLE DROP — Tennis</b>\n"
+            f"<b>⬇️ PINNACLE DROP — {sport_tag}</b>\n"
             f"{match.get('player1')} vs {match.get('player2')}\n"
             f"{match.get('tournament') or ''} · start {start_str}\n"
             f"{sel['market_name']} — <b>{sel['label']}</b>\n"

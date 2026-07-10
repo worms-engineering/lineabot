@@ -15,6 +15,11 @@ accende/spegne da un pulsante in dashboard (o via `POST /api/tracking`).
 
 Ognuno usa la sua key (`THE_ODDS_API_KEY` / `ODDSPAPI_KEY`); imposta quella dei provider che usi.
 
+**Multi-sport**: oltre al tennis, un toggle in dashboard abilita il **basket** (via OddsPapi),
+limitato a **NBA (incl. Summer League), WNBA ed EuroBasket** (whitelist in
+`BASKETBALL_WHITELIST`, modificabile). Gli alert indicano sport (🎾/🏀) e torneo. Ogni sport
+in più aumenta le chiamate di ~`1 + ⌈tornei_in_finestra/5⌉` per scan.
+
 Questo repository è la versione **standalone**, estratta da Emergent e pronta al deploy
 indipendente:
 
