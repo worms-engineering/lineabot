@@ -135,6 +135,7 @@ class OddsPapiClient:
         self._client = httpx.AsyncClient(timeout=30.0)
         self._next_request_at = 0.0
         self.requests_remaining: int | None = None  # OddsPapi has no quota header
+        self.quota_exhausted = False
 
     async def close(self):
         await self._client.aclose()
@@ -153,15 +154,29 @@ class OddsPapiClient:
         for attempt in range(_MAX_RETRIES + 1):
             await self._pace()
             resp = await self._client.get(url, params=params)
-            if resp.status_code == 429 and attempt < _MAX_RETRIES:
-                await asyncio.sleep(self._retry_delay(resp))
-                continue
+            if resp.status_code == 429:
+                # 429 is used both for transient rate limiting (RATE_LIMITED,
+                # retry) and for the permanent monthly quota (REQUEST_LIMIT_
+                # EXCEEDED, do not retry).
+                try:
+                    code = (resp.json().get("error") or {}).get("code")
+                except Exception:
+                    code = None
+                if code == "REQUEST_LIMIT_EXCEEDED":
+                    self.quota_exhausted = True
+                    raise RuntimeError(f"OddsPapi quota exhausted on {path}: request limit reached")
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(self._retry_delay(resp))
+                    continue
             resp.raise_for_status()
             data = resp.json()
             if isinstance(data, dict) and "error" in data:
                 err = data["error"] or {}
+                if err.get("code") == "REQUEST_LIMIT_EXCEEDED":
+                    self.quota_exhausted = True
                 raise RuntimeError(f"OddsPapi v4 error on {path}: "
                                    f"{err.get('message')} ({err.get('code')})")
+            self.quota_exhausted = False
             return data
         resp.raise_for_status()
         return resp.json()

@@ -54,6 +54,7 @@ class TheOddsApiClient:
         self._client = httpx.AsyncClient(timeout=30.0)
         self.requests_remaining: int | None = None
         self.requests_used: int | None = None
+        self.quota_exhausted = False
 
     async def close(self):
         await self._client.aclose()
@@ -71,7 +72,13 @@ class TheOddsApiClient:
                     setattr(self, attr, int(val))
                 except ValueError:
                     pass
+        # 401 (invalid/over-quota key) or 429 signal the key can't serve.
+        if resp.status_code in (401, 429):
+            self.quota_exhausted = True
         resp.raise_for_status()
+        self.quota_exhausted = (
+            self.requests_remaining is not None and self.requests_remaining <= 0
+        )
         return resp.json()
 
     async def get_sports(self) -> list[dict]:

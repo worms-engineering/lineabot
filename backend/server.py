@@ -103,6 +103,7 @@ class StatusOut(BaseModel):
     provider: str
     use_mock_data: bool
     requests_remaining: int | None
+    quota_warning: str | None
 
 
 class TrackingIn(BaseModel):
@@ -110,6 +111,29 @@ class TrackingIn(BaseModel):
 
 
 # ---- Endpoints -------------------------------------------------------------
+
+LOW_QUOTA_THRESHOLD = 20  # warn when The Odds API credits fall to/below this
+
+_PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
+
+
+def _quota_warning() -> str | None:
+    """Human message if any in-use provider is out of / low on quota."""
+    in_use = {monitor.provider}
+    if monitor.basketball_enabled:
+        in_use.add("oddspapi")  # basketball always runs on OddsPapi
+    msgs = []
+    for key in sorted(in_use):
+        client = monitor.clients.get(key)
+        if client is None or client.use_mock:
+            continue
+        label = _PROVIDER_LABELS.get(key, key)
+        if getattr(client, "quota_exhausted", False):
+            msgs.append(f"{label}: quota esaurita")
+        elif client.requests_remaining is not None and client.requests_remaining <= LOW_QUOTA_THRESHOLD:
+            msgs.append(f"{label}: {client.requests_remaining} crediti rimasti")
+    return " · ".join(msgs) if msgs else None
+
 
 @app.get("/")
 async def health():
@@ -138,6 +162,7 @@ async def get_status():
         provider=monitor.provider,
         use_mock_data=monitor.client.use_mock,
         requests_remaining=monitor.client.requests_remaining,
+        quota_warning=_quota_warning(),
     )
 
 

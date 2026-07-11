@@ -53,6 +53,7 @@ export default function Dashboard() {
   });
   const audioCtxRef = useRef(null);
   const lastAlertRef = useRef(null);
+  const quotaWarnRef = useRef(null);
 
   const loadAll = useCallback(async () => {
     try {
@@ -185,6 +186,15 @@ export default function Dashboard() {
       if (soundEnabled) playAlertSound();
     }
   }, [alerts, soundEnabled, playAlertSound]);
+
+  // Toast once when an API quota warning appears (or changes).
+  useEffect(() => {
+    const w = status?.quota_warning || null;
+    if (w && w !== quotaWarnRef.current) {
+      toast.error(`⚠️ Quota API — ${w}`, { duration: 12000 });
+    }
+    quotaWarnRef.current = w;
+  }, [status?.quota_warning]);
 
   const manualRefresh = async () => {
     if (scanningRef.current) return;
@@ -362,6 +372,16 @@ export default function Dashboard() {
           />
         </div>
       </header>
+
+      {status?.quota_warning && (
+        <div
+          data-testid="quota-banner"
+          className="shrink-0 flex items-center gap-2 px-6 py-2 bg-[#FF3B30]/10 border-b border-[#FF3B30]/40 text-[#FF3B30] text-xs uppercase tracking-widest"
+        >
+          <AlertCircle size={14} className="shrink-0" />
+          <span>Quota API — {status.quota_warning}. Aggiorna la key o cambia provider.</span>
+        </div>
+      )}
 
       {/* MAIN */}
       <div className="flex flex-1 overflow-hidden">
