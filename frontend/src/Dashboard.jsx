@@ -252,10 +252,12 @@ export default function Dashboard() {
     return Math.max(0, Math.floor((new Date(status.next_scan_at).getTime() - now) / 1000));
   }, [status, now]);
 
+  const nowSec = Math.floor(now / 1000);
   const rows = useMemo(() => {
     if (!snapshot?.matches) return [];
     const out = [];
     for (const m of snapshot.matches) {
+      if (m.start_time && m.start_time <= nowSec) continue;  // match già iniziato
       for (const ln of m.lines || []) {
         if (onlyDrops && !ln.is_drop) continue;
         if ((ln.drop_from_open || 0) * 100 < minDrop) continue;
@@ -264,9 +266,11 @@ export default function Dashboard() {
     }
     out.sort((a, b) => (b.drop_from_open || 0) - (a.drop_from_open || 0));
     return out;
-  }, [snapshot, onlyDrops, minDrop]);
+  }, [snapshot, onlyDrops, minDrop, nowSec]);
 
-  const totalFixtures = snapshot?.matches?.length || 0;
+  const totalFixtures = (snapshot?.matches || []).filter(
+    m => !m.start_time || m.start_time > nowSec
+  ).length;
   const activeDrops = rows.filter(r => r.is_drop).length;
   const threshold = (settings?.drop_threshold ?? 0.05) * 100;
 

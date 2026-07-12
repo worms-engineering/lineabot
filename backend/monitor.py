@@ -24,6 +24,9 @@ from telegram_client import TelegramClient
 logger = logging.getLogger(__name__)
 
 WINDOW_SECONDS = 60 * 60
+# Ignore matches about to start: leaves time to act and avoids tracking/alerting
+# a match that will have kicked off by the time you see it.
+MIN_LEAD_SECONDS = 90
 DEFAULT_DROP_THRESHOLD = 0.05
 MAX_BASELINE_AGE_SECONDS = 30 * 60
 LINE_STATE_TTL_SECONDS = 6 * 60 * 60
@@ -182,6 +185,7 @@ class TennisMonitor:
     async def _scan_impl(self, dry_run_notify: bool) -> dict:
         now_dt = _now()
         now_ts = int(now_dt.timestamp())
+        window_start = now_ts + MIN_LEAD_SECONDS  # skip matches about to start
         end_ts = now_ts + WINDOW_SECONDS
 
         matches: list[dict] = []
@@ -189,7 +193,7 @@ class TennisMonitor:
         for sport, prov, whitelist in self._scan_plan():
             client = self.clients[prov]
             try:
-                raw = await client.get_pinnacle_matches(sport, now_ts, end_ts, whitelist)
+                raw = await client.get_pinnacle_matches(sport, window_start, end_ts, whitelist)
             except Exception as e:
                 logger.warning("scan sport=%s provider=%s failed: %s", sport, prov, e)
                 sport_errors[sport] = str(e)
