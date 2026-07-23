@@ -25,7 +25,7 @@ import mock_data
 BASE_URL = "https://api.oddspapi.io/v4"
 TENNIS_SPORT_ID = 12
 # Canonical sport key -> OddsPapi sportId.
-SPORT_IDS = {"tennis": 12, "basketball": 11}
+SPORT_IDS = {"tennis": 12, "basketball": 11, "football": 10}
 TOURNAMENT_CHUNK_SIZE = 5
 _BOOKMAKER_CHUNK_LIMITS = {"betfair-ex": 3}
 _MIN_REQUEST_INTERVAL = 1.05
@@ -68,14 +68,42 @@ def _is_real_event(fx: dict) -> bool:
 
 
 def _matches_whitelist(fx: dict, patterns) -> bool:
-    """True if the fixture's tournament name contains any whitelist substring."""
+    """True if the fixture matches the whitelist. Patterns can be:
+    - a plain lowercase substring, matched against tournamentName only
+      (e.g. basketball's "nba");
+    - a (category_or_None, name) 2-tuple: exact (trimmed, case-insensitive)
+      tournamentName match, optionally scoped to a category substring — used
+      for domestic top flights, so "Bundesliga" doesn't also match
+      "2. Bundesliga" the way a substring would;
+    - a (category_or_None, name_substring, "contains") 3-tuple: substring
+      match instead of exact — used for UEFA cups, so it still catches
+      qualifying-round variants like "UEFA Europa League Qualification".
+    A None category means "any" (international/UEFA competitions).
+    """
     if not patterns:
         return True
-    name = (fx.get("tournamentName") or "").lower()
-    return any(p in name for p in patterns)
+    name = (fx.get("tournamentName") or "").strip().lower()
+    category = (fx.get("categoryName") or "").lower()
+    for p in patterns:
+        if isinstance(p, tuple):
+            if len(p) == 3:
+                cat_pat, name_pat, _mode = p
+                name_ok = name_pat in name
+            else:
+                cat_pat, name_pat = p
+                name_ok = name == name_pat
+            if name_ok and (cat_pat is None or cat_pat in category):
+                return True
+        elif p in name:
+            return True
+    return False
 
 
 def _pinnacle_h2h(book_odds: dict) -> dict | None:
+    """Sharp moneyline prices. Returns {"home": price, "away": price} and,
+    for sports with a draw (football's 1X2), also {"draw": price}. Tennis and
+    basketball fixtures simply never carry a "draw" outcome, so this is a
+    no-op for them."""
     for market in (book_odds.get("markets") or {}).values():
         if market.get("marketActive") is False:
             continue
@@ -88,10 +116,10 @@ def _pinnacle_h2h(book_odds: dict) -> dict | None:
             if price is None or player.get("active") is False:
                 continue
             boid = player.get("bookmakerOutcomeId")
-            if boid in ("home", "away"):
+            if boid in ("home", "away", "draw"):
                 sides[boid] = float(price)
         if "home" in sides and "away" in sides:
-            return {"home_price": sides["home"], "away_price": sides["away"]}
+            return sides
     return None
 
 
@@ -261,10 +289,14 @@ class OddsPapiClient:
             if h2h:
                 selections.append({"market_key": "h2h", "market_name": H2H_MARKET_NAME,
                                    "outcome": "home", "point": None, "label": p1,
-                                   "price": h2h["home_price"]})
+                                   "price": h2h["home"]})
                 selections.append({"market_key": "h2h", "market_name": H2H_MARKET_NAME,
                                    "outcome": "away", "point": None, "label": p2,
-                                   "price": h2h["away_price"]})
+                                   "price": h2h["away"]})
+                if "draw" in h2h:
+                    selections.append({"market_key": "h2h", "market_name": H2H_MARKET_NAME,
+                                       "outcome": "draw", "point": None, "label": "Pareggio",
+                                       "price": h2h["draw"]})
             total = _pinnacle_main_total(book)
             if total:
                 selections.append({"market_key": "totals", "market_name": TOTALS_MARKET_NAME,

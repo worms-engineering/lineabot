@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽" };
 
 function fmtTime(ts) {
   if (!ts) return "—";
@@ -247,6 +247,29 @@ export default function Dashboard() {
     }
   };
 
+  const football = !!status?.football_enabled;
+  const toggleFootball = async () => {
+    try {
+      await axios.put(`${API}/settings`, { football_enabled: !football });
+      toast[!football ? "success" : "info"](`Calcio ${!football ? "attivato" : "disattivato"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
+  const footballProvider = status?.football_provider;
+  const setFootballProvider = async (p) => {
+    if (!p || p === footballProvider) return;
+    try {
+      await axios.put(`${API}/settings`, { football_provider: p });
+      toast.success(`Calcio → ${PROVIDER_LABELS[p] || p}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const nextScanSec = useMemo(() => {
     if (!status?.next_scan_at) return null;
     return Math.max(0, Math.floor((new Date(status.next_scan_at).getTime() - now) / 1000));
@@ -285,7 +308,7 @@ export default function Dashboard() {
             <div className={`w-2 h-2 rounded-full ${tracking ? "bg-[#32D74B] pulse-dot" : "bg-zinc-600"}`} />
             <span className="font-display uppercase tracking-tight text-xl font-bold">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
           </div>
-          <span className="text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis &amp; Basket · H2H &amp; Totals</span>
+          <span className="text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket &amp; Calcio · H2H &amp; Totals</span>
         </div>
 
         <div className="flex items-center gap-6">
@@ -336,6 +359,36 @@ export default function Dashboard() {
           >
             🏀 {basketball ? "ON" : "OFF"}
           </button>
+
+          <button
+            data-testid="football-toggle"
+            onClick={toggleFootball}
+            title="Traccia anche il calcio (Top-5 leghe europee + Champions/Europa/Conference League, via The Odds API)"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              football
+                ? "border-[#32D74B]/40 bg-[#32D74B]/10 text-[#32D74B] hover:bg-[#32D74B]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            ⚽ {football ? "ON" : "OFF"}
+          </button>
+
+          {football && (
+            <div className="flex border border-white/15" data-testid="football-provider-switch" title="Provider quote per il calcio">
+              {(settings?.providers || ["theoddsapi", "oddspapi"]).map(p => (
+                <button
+                  key={p}
+                  data-testid={`football-provider-${p}`}
+                  onClick={() => setFootballProvider(p)}
+                  className={`px-2 py-1.5 text-[10px] uppercase tracking-widest font-bold transition-colors ${
+                    footballProvider === p ? "bg-[#32D74B] text-black" : "text-zinc-400 hover:bg-white/5"
+                  }`}
+                >
+                  {PROVIDER_LABELS[p] || p}
+                </button>
+              ))}
+            </div>
+          )}
 
           <button
             data-testid="sound-toggle"

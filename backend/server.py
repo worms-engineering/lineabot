@@ -76,7 +76,9 @@ class SettingsIn(BaseModel):
     drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     tracking_enabled: bool | None = None
     basketball_enabled: bool | None = None
+    football_enabled: bool | None = None
     provider: str | None = None
+    football_provider: str | None = None
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
 
@@ -85,7 +87,9 @@ class SettingsOut(BaseModel):
     drop_threshold: float
     tracking_enabled: bool
     basketball_enabled: bool
+    football_enabled: bool
     provider: str
+    football_provider: str
     providers: list[str]
     telegram_configured: bool
     refresh_minutes: int
@@ -100,7 +104,9 @@ class StatusOut(BaseModel):
     drop_threshold: float
     tracking_enabled: bool
     basketball_enabled: bool
+    football_enabled: bool
     provider: str
+    football_provider: str
     use_mock_data: bool
     requests_remaining: int | None
     quota_warning: str | None
@@ -122,6 +128,8 @@ def _quota_warning() -> str | None:
     in_use = {monitor.provider}
     if monitor.basketball_enabled:
         in_use.add("oddspapi")  # basketball always runs on OddsPapi
+    if monitor.football_enabled:
+        in_use.add(monitor.football_provider)
     msgs = []
     for key in sorted(in_use):
         client = monitor.clients.get(key)
@@ -159,7 +167,9 @@ async def get_status():
         drop_threshold=monitor.drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
         basketball_enabled=monitor.basketball_enabled,
+        football_enabled=monitor.football_enabled,
         provider=monitor.provider,
+        football_provider=monitor.football_provider,
         use_mock_data=monitor.client.use_mock,
         requests_remaining=monitor.client.requests_remaining,
         quota_warning=_quota_warning(),
@@ -206,7 +216,9 @@ def _settings_out() -> SettingsOut:
         drop_threshold=monitor.drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
         basketball_enabled=monitor.basketball_enabled,
+        football_enabled=monitor.football_enabled,
         provider=monitor.provider,
+        football_provider=monitor.football_provider,
         providers=list(monitor.clients.keys()),
         telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
         refresh_minutes=REFRESH_MINUTES,
@@ -222,11 +234,15 @@ async def get_settings():
 async def update_settings(body: SettingsIn):
     if body.provider is not None and body.provider not in monitor.clients:
         raise HTTPException(400, f"Unknown provider: {body.provider}")
+    if body.football_provider is not None and body.football_provider not in monitor.clients:
+        raise HTTPException(400, f"Unknown football_provider: {body.football_provider}")
     await monitor.save_settings(
         drop_threshold=body.drop_threshold,
         tracking_enabled=body.tracking_enabled,
         basketball_enabled=body.basketball_enabled,
+        football_enabled=body.football_enabled,
         provider=body.provider,
+        football_provider=body.football_provider,
         telegram_token=body.telegram_token,
         telegram_chat_id=body.telegram_chat_id,
     )
