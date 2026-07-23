@@ -258,6 +258,18 @@ export default function Dashboard() {
     }
   };
 
+  const footballProvider = status?.football_provider;
+  const setFootballProvider = async (p) => {
+    if (!p || p === footballProvider) return;
+    try {
+      await axios.put(`${API}/settings`, { football_provider: p });
+      toast.success(`Calcio → ${PROVIDER_LABELS[p] || p}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const nextScanSec = useMemo(() => {
     if (!status?.next_scan_at) return null;
     return Math.max(0, Math.floor((new Date(status.next_scan_at).getTime() - now) / 1000));
@@ -360,6 +372,23 @@ export default function Dashboard() {
           >
             ⚽ {football ? "ON" : "OFF"}
           </button>
+
+          {football && (
+            <div className="flex border border-white/15" data-testid="football-provider-switch" title="Provider quote per il calcio">
+              {(settings?.providers || ["theoddsapi", "oddspapi"]).map(p => (
+                <button
+                  key={p}
+                  data-testid={`football-provider-${p}`}
+                  onClick={() => setFootballProvider(p)}
+                  className={`px-2 py-1.5 text-[10px] uppercase tracking-widest font-bold transition-colors ${
+                    footballProvider === p ? "bg-[#32D74B] text-black" : "text-zinc-400 hover:bg-white/5"
+                  }`}
+                >
+                  {PROVIDER_LABELS[p] || p}
+                </button>
+              ))}
+            </div>
+          )}
 
           <button
             data-testid="sound-toggle"
