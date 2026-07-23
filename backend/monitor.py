@@ -38,9 +38,15 @@ DEFAULT_PROVIDER = "theoddsapi"
 # NBA + NBA Summer League + WNBA + EuroBasket. Edit to taste.
 BASKETBALL_WHITELIST = ["nba", "wnba", "eurobasket"]
 
+# Football is tracked only on The Odds API, restricted to the top-5 European
+# leagues + main UEFA cups (see FOOTBALL_LEAGUE_KEYS in theoddsapi_client.py).
+# Kept separate from the tennis `provider` toggle: it always runs, regardless
+# of whether tennis is on OddsPapi or The Odds API this cycle.
+
 SPORT_META = {
     "tennis": {"label": "Tennis", "emoji": "🎾"},
     "basketball": {"label": "Basket", "emoji": "🏀"},
+    "football": {"label": "Calcio", "emoji": "⚽"},
 }
 
 
@@ -74,6 +80,7 @@ class TennisMonitor:
         self.drop_threshold = drop_threshold
         self.tracking_enabled = True
         self.basketball_enabled = True
+        self.football_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -95,6 +102,8 @@ class TennisMonitor:
                 self.tracking_enabled = bool(cfg["tracking_enabled"])
             if "basketball_enabled" in cfg:
                 self.basketball_enabled = bool(cfg["basketball_enabled"])
+            if "football_enabled" in cfg:
+                self.football_enabled = bool(cfg["football_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             token = cfg.get("telegram_token")
@@ -107,6 +116,7 @@ class TennisMonitor:
     async def save_settings(self, drop_threshold: float | None = None,
                             tracking_enabled: bool | None = None,
                             basketball_enabled: bool | None = None,
+                            football_enabled: bool | None = None,
                             provider: str | None = None,
                             telegram_token: str | None = None,
                             telegram_chat_id: str | None = None):
@@ -120,6 +130,9 @@ class TennisMonitor:
         if basketball_enabled is not None:
             self.basketball_enabled = bool(basketball_enabled)
             update["basketball_enabled"] = self.basketball_enabled
+        if football_enabled is not None:
+            self.football_enabled = bool(football_enabled)
+            update["football_enabled"] = self.football_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -180,6 +193,10 @@ class TennisMonitor:
         plan = [("tennis", self.provider, None)]
         if self.basketball_enabled:
             plan.append(("basketball", "oddspapi", BASKETBALL_WHITELIST))
+        if self.football_enabled:
+            # Always on The Odds API, restricted to FOOTBALL_LEAGUE_KEYS
+            # (top-5 European leagues + main UEFA cups) inside the client.
+            plan.append(("football", "theoddsapi", None))
         return plan
 
     async def _scan_impl(self, dry_run_notify: bool) -> dict:

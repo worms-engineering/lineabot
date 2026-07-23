@@ -24,6 +24,11 @@ _MATCHES = {
         ("WNBA", "Aces", "Liberty", 1.60, 2.35, 165.5, 1.93, 1.90),
         ("EuroBasket", "Spain", "France", 2.10, 1.75, 158.5, 1.91, 1.93),
     ],
+    "football": [
+        ("Premier League", "Arsenal", "Liverpool", 2.30, 3.10, 2.5, 1.85, 1.95),
+        ("La Liga", "Real Madrid", "Barcelona", 2.55, 2.70, 2.5, 1.80, 2.00),
+        ("Champions League", "Bayern Munich", "Inter", 1.75, 4.50, 2.5, 1.70, 2.10),
+    ],
 }
 
 

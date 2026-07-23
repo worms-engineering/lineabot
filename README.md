@@ -15,10 +15,21 @@ accende/spegne da un pulsante in dashboard (o via `POST /api/tracking`).
 
 Ognuno usa la sua key (`THE_ODDS_API_KEY` / `ODDSPAPI_KEY`); imposta quella dei provider che usi.
 
-**Multi-sport**: oltre al tennis, un toggle in dashboard abilita il **basket** (via OddsPapi),
-limitato a **NBA (incl. Summer League), WNBA ed EuroBasket** (whitelist in
-`BASKETBALL_WHITELIST`, modificabile). Gli alert indicano sport (🎾/🏀) e torneo. Ogni sport
-in più aumenta le chiamate di ~`1 + ⌈tornei_in_finestra/5⌉` per scan.
+**Multi-sport**: oltre al tennis, due toggle in dashboard abilitano rispettivamente:
+- **basket** — sempre via **OddsPapi**, limitato a **NBA (incl. Summer League), WNBA ed
+  EuroBasket** (whitelist in `BASKETBALL_WHITELIST`, modificabile);
+- **calcio** — sempre via **The Odds API**, limitato ai **top-5 campionati europei
+  (Premier League, La Liga, Serie A, Bundesliga, Ligue 1) + Champions/Europa/Conference
+  League** (whitelist `FOOTBALL_LEAGUE_KEYS` in `theoddsapi_client.py`, modificabile).
+
+I due provider funzionano **in parallelo, nella stessa scansione**: puoi tenere il tennis su
+uno qualsiasi dei due (toggle "provider") mentre basket e calcio restano fissi ciascuno sul
+proprio, indipendentemente da quale provider è selezionato per il tennis. Ti servono entrambe
+le key (`THE_ODDS_API_KEY` e `ODDSPAPI_KEY`) se vuoi tutti e tre gli sport attivi.
+
+Gli alert indicano sport (🎾/🏀/⚽) e torneo. Ogni sport in più aumenta le chiamate: il basket
+di ~`1 + ⌈tornei_in_finestra/5⌉` per scan (OddsPapi), il calcio di ~`2 crediti × leghe attive`
+per scan (The Odds API, markets=h2h,totals × regions=eu — leghe fuori stagione non contano).
 
 Questo repository è la versione **standalone**, estratta da Emergent e pronta al deploy
 indipendente:

@@ -4,10 +4,14 @@ Exposes get_pinnacle_matches() returning the normalized shape the monitor uses:
     {match_id, tournament, player1, player2, start_epoch, selections:[
         {market_key, market_name, outcome, point, label, price}]}
 
-Tennis is per-tournament sport keys (e.g. "tennis_atp_wimbledon"); a scan lists
-the active tennis keys via the free /sports endpoint then fetches odds for each
-(regions=eu, markets=h2h,totals -> 2 credits per key). Quota is read from the
-x-requests-remaining header. Key: THE_ODDS_API_KEY, falling back to ODDSPAPI_KEY.
+Tennis/basketball are per-tournament sport keys discovered dynamically by
+prefix (e.g. "tennis_atp_wimbledon") via the free /sports endpoint. Football
+instead uses a fixed whitelist of sport keys (FOOTBALL_LEAGUE_KEYS: Europe's
+top-5 leagues + main UEFA cups) intersected with the active keys from /sports,
+since the generic "soccer_" prefix would otherwise pull in hundreds of minor
+leagues worldwide. Each active key costs regions x markets credits per scan
+(eu, h2h+totals -> 2 credits/key). Quota is read from the x-requests-remaining
+header. Key: THE_ODDS_API_KEY, falling back to ODDSPAPI_KEY.
 """
 from __future__ import annotations
 
@@ -20,8 +24,20 @@ import httpx
 import mock_data
 
 BASE_URL = "https://api.the-odds-api.com/v4"
-# Canonical sport key -> The Odds API sport-key prefix.
+# Canonical sport key -> The Odds API sport-key prefix (dynamic discovery).
 SPORT_PREFIXES = {"tennis": "tennis_", "basketball": "basketball_"}
+# Football: explicit whitelist instead of a prefix (top-5 European leagues +
+# main UEFA club competitions). Edit to taste.
+FOOTBALL_LEAGUE_KEYS = [
+    "soccer_epl",                          # Premier League
+    "soccer_spain_la_liga",                # La Liga
+    "soccer_italy_serie_a",                # Serie A
+    "soccer_germany_bundesliga",           # Bundesliga
+    "soccer_france_ligue_one",             # Ligue 1
+    "soccer_uefa_champs_league",           # Champions League
+    "soccer_uefa_europa_league",           # Europa League
+    "soccer_uefa_europa_conference_league",  # Conference League
+]
 DEFAULT_REGIONS = "eu"
 DEFAULT_MARKETS = "h2h,totals"
 
@@ -85,10 +101,17 @@ class TheOddsApiClient:
         data = await self._get("/sports", {})
         return data if isinstance(data, list) else []
 
-    async def get_events(self, prefix: str, regions=DEFAULT_REGIONS, markets=DEFAULT_MARKETS) -> list[dict]:
+    async def get_events(self, prefix: str | None = None, sport_keys: list[str] | None = None,
+                         regions=DEFAULT_REGIONS, markets=DEFAULT_MARKETS) -> list[dict]:
+        """List odds events either by key prefix (tennis/basketball) or by an
+        explicit whitelist of sport keys (football). Only currently-active
+        keys are queried, so off-season leagues/tournaments cost 0 credits."""
         sports = await self.get_sports()
-        keys = [s["key"] for s in sports
-                if s.get("active") and str(s.get("key", "")).startswith(prefix)]
+        active = {s["key"] for s in sports if s.get("active")}
+        if sport_keys is not None:
+            keys = [k for k in sport_keys if k in active]
+        else:
+            keys = [k for k in active if k.startswith(prefix or "")]
         events: list[dict] = []
         for key in keys:
             try:
@@ -109,8 +132,10 @@ class TheOddsApiClient:
         """Normalized Pinnacle matches (H2H + totals) for a sport in the window."""
         if self.use_mock:
             return mock_data.build_mock_pinnacle_matches(sport, start_epoch, end_epoch)
-        prefix = SPORT_PREFIXES.get(sport, "tennis_")
-        events = await self.get_events(prefix)
+        if sport == "football":
+            events = await self.get_events(sport_keys=FOOTBALL_LEAGUE_KEYS)
+        else:
+            events = await self.get_events(prefix=SPORT_PREFIXES.get(sport, "tennis_"))
         out: list[dict] = []
         for ev in events:
             st = _iso_epoch(ev.get("commence_time"))
