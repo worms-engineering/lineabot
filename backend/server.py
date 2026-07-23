@@ -74,6 +74,7 @@ api = APIRouter(prefix="/api")
 
 class SettingsIn(BaseModel):
     drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    football_drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     tracking_enabled: bool | None = None
     basketball_enabled: bool | None = None
     football_enabled: bool | None = None
@@ -85,6 +86,7 @@ class SettingsIn(BaseModel):
 
 class SettingsOut(BaseModel):
     drop_threshold: float
+    football_drop_threshold: float
     tracking_enabled: bool
     basketball_enabled: bool
     football_enabled: bool
@@ -102,6 +104,7 @@ class StatusOut(BaseModel):
     next_scan_at: str | None
     refresh_minutes: int
     drop_threshold: float
+    football_drop_threshold: float
     tracking_enabled: bool
     basketball_enabled: bool
     football_enabled: bool
@@ -165,6 +168,7 @@ async def get_status():
         next_scan_at=next_run,
         refresh_minutes=REFRESH_MINUTES,
         drop_threshold=monitor.drop_threshold,
+        football_drop_threshold=monitor.football_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
@@ -214,6 +218,7 @@ async def set_tracking(body: TrackingIn):
 def _settings_out() -> SettingsOut:
     return SettingsOut(
         drop_threshold=monitor.drop_threshold,
+        football_drop_threshold=monitor.football_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
@@ -238,6 +243,7 @@ async def update_settings(body: SettingsIn):
         raise HTTPException(400, f"Unknown football_provider: {body.football_provider}")
     await monitor.save_settings(
         drop_threshold=body.drop_threshold,
+        football_drop_threshold=body.football_drop_threshold,
         tracking_enabled=body.tracking_enabled,
         basketball_enabled=body.basketball_enabled,
         football_enabled=body.football_enabled,

@@ -98,6 +98,10 @@ class TennisMonitor:
         self.provider = DEFAULT_PROVIDER
         self.football_provider = "oddspapi"  # switch to "theoddsapi" later in-season
         self.drop_threshold = drop_threshold
+        # Football has many more markets/books moving at once than tennis or
+        # basketball, which was flooding alerts at the same 5% default -
+        # independently configurable, defaults to the same value as tennis/basket.
+        self.football_drop_threshold = drop_threshold
         self.tracking_enabled = True
         self.basketball_enabled = True
         self.football_enabled = True
@@ -121,6 +125,9 @@ class TennisMonitor:
         cfg = await self.db.settings.find_one({"_id": "config"})
         if cfg:
             self.drop_threshold = float(cfg.get("drop_threshold", self.drop_threshold))
+            self.football_drop_threshold = float(
+                cfg.get("football_drop_threshold", self.football_drop_threshold)
+            )
             if "tracking_enabled" in cfg:
                 self.tracking_enabled = bool(cfg["tracking_enabled"])
             if "basketball_enabled" in cfg:
@@ -139,6 +146,7 @@ class TennisMonitor:
                 self.telegram.chat_id = chat_id
 
     async def save_settings(self, drop_threshold: float | None = None,
+                            football_drop_threshold: float | None = None,
                             tracking_enabled: bool | None = None,
                             basketball_enabled: bool | None = None,
                             football_enabled: bool | None = None,
@@ -150,6 +158,9 @@ class TennisMonitor:
         if drop_threshold is not None:
             self.drop_threshold = float(drop_threshold)
             update["drop_threshold"] = self.drop_threshold
+        if football_drop_threshold is not None:
+            self.football_drop_threshold = float(football_drop_threshold)
+            update["football_drop_threshold"] = self.football_drop_threshold
         if tracking_enabled is not None:
             self.tracking_enabled = bool(tracking_enabled)
             update["tracking_enabled"] = self.tracking_enabled
@@ -271,6 +282,7 @@ class TennisMonitor:
             match_id = match.get("match_id")
             provider = match.get("provider", self.provider)
             sport = match.get("sport", "tennis")
+            threshold = self.football_drop_threshold if sport == "football" else self.drop_threshold
             line_rows: list[dict] = []
             for sel in match.get("selections") or []:
                 point_key = "" if sel.get("point") is None else sel["point"]
@@ -293,7 +305,7 @@ class TennisMonitor:
                         fresh = (now_ts - prev_epoch) <= MAX_BASELINE_AGE_SECONDS
                     if prev_price and curr < prev_price:
                         drop_last = (prev_price - curr) / prev_price
-                        if fresh and drop_last >= self.drop_threshold:
+                        if fresh and drop_last >= threshold:
                             is_drop = True
 
                 drop_from_open = (
@@ -383,6 +395,7 @@ class TennisMonitor:
                 "football_enabled": self.football_enabled,
                 "football_provider": self.football_provider,
                 "drop_threshold": self.drop_threshold,
+                "football_drop_threshold": self.football_drop_threshold,
                 "tracking_enabled": self.tracking_enabled,
                 "matches": matches_payload,
             }},
