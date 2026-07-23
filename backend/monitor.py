@@ -66,6 +66,8 @@ SPORT_META = {
     "football": {"label": "Calcio", "emoji": "⚽"},
 }
 
+PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -103,6 +105,9 @@ class TennisMonitor:
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
         self.last_scan_stats: dict[str, Any] = {}
+        # Providers we've already sent a "quota exhausted" Telegram alert for,
+        # so we don't re-alert on every scan while it stays exhausted.
+        self._quota_alerted: set[str] = set()
 
     @property
     def client(self):
@@ -237,11 +242,21 @@ class TennisMonitor:
         sport_errors: dict[str, str] = {}
         for sport, prov, whitelist in self._scan_plan():
             client = self.clients[prov]
+            raw: list[dict] | None = None
             try:
                 raw = await client.get_pinnacle_matches(sport, window_start, end_ts, whitelist)
             except Exception as e:
                 logger.warning("scan sport=%s provider=%s failed: %s", sport, prov, e)
                 sport_errors[sport] = str(e)
+            # Checked on both success and failure: OddsPapi only flags
+            # quota_exhausted via a raised error, but The Odds API can also
+            # flip it on a *successful* call once requests_remaining hits 0.
+            if getattr(client, "quota_exhausted", False):
+                if not dry_run_notify:
+                    await self._notify_quota_exhausted(prov)
+            else:
+                self._quota_alerted.discard(prov)  # quota ok/reset: re-arm the alert
+            if raw is None:
                 continue
             for m in raw:
                 m["sport"] = sport
@@ -385,6 +400,21 @@ class TennisMonitor:
         if sport_errors:
             stats["sport_errors"] = sport_errors
         return stats
+
+    async def _notify_quota_exhausted(self, provider: str):
+        if provider in self._quota_alerted:
+            return
+        self._quota_alerted.add(provider)
+        label = PROVIDER_LABELS.get(provider, provider)
+        text = (
+            f"<b>⚠️ Quota API esaurita — {label}</b>\n"
+            f"Lo scan per gli sport che usano questo provider è sospeso finché "
+            f"la quota non si resetta."
+        )
+        try:
+            await self.telegram.send_message(text)
+        except Exception as e:
+            logger.warning("quota-exhausted telegram alert failed: %s", e)
 
     def _format_drop_alert(self, match: dict, sel: dict, prev_price: float,
                            curr: float, drop_last: float, drop_from_open: float) -> str:
