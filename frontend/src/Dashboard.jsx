@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", f1: "🏎️" };
 
 function fmtTime(ts) {
   if (!ts) return "—";
@@ -270,6 +270,17 @@ export default function Dashboard() {
     }
   };
 
+  const f1 = !!status?.f1_enabled;
+  const toggleF1 = async () => {
+    try {
+      await axios.put(`${API}/settings`, { f1_enabled: !f1 });
+      toast[!f1 ? "success" : "info"](`F1 ${!f1 ? "attivata" : "disattivata"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const nextScanSec = useMemo(() => {
     if (!status?.next_scan_at) return null;
     return Math.max(0, Math.floor((new Date(status.next_scan_at).getTime() - now) / 1000));
@@ -389,6 +400,19 @@ export default function Dashboard() {
               ))}
             </div>
           )}
+
+          <button
+            data-testid="f1-toggle"
+            onClick={toggleF1}
+            title="Traccia anche l'F1 (Head to Head piloti, solo via The Odds API)"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              f1
+                ? "border-[#FF375F]/40 bg-[#FF375F]/10 text-[#FF375F] hover:bg-[#FF375F]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🏎️ {f1 ? "ON" : "OFF"}
+          </button>
 
           <button
             data-testid="sound-toggle"

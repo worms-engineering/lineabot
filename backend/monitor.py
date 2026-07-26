@@ -60,10 +60,15 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
 # Football on The Odds API uses a fixed sport-key whitelist instead
 # (FOOTBALL_LEAGUE_KEYS in theoddsapi_client.py), so no name-based filter here.
 
+# F1 (driver Head to Head specials) is only available on The Odds API -
+# OddsPapi has no motorsport/F1 sport at all. Sport key is whitelisted
+# there too (F1_SPORT_KEYS in theoddsapi_client.py), no filter needed here.
+
 SPORT_META = {
     "tennis": {"label": "Tennis", "emoji": "🎾"},
     "basketball": {"label": "Basket", "emoji": "🏀"},
     "football": {"label": "Calcio", "emoji": "⚽"},
+    "f1": {"label": "F1", "emoji": "🏎️"},
 }
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
@@ -105,6 +110,7 @@ class TennisMonitor:
         self.tracking_enabled = True
         self.basketball_enabled = True
         self.football_enabled = True
+        self.f1_enabled = True  # always theoddsapi: OddsPapi has no F1
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -134,6 +140,8 @@ class TennisMonitor:
                 self.basketball_enabled = bool(cfg["basketball_enabled"])
             if "football_enabled" in cfg:
                 self.football_enabled = bool(cfg["football_enabled"])
+            if "f1_enabled" in cfg:
+                self.f1_enabled = bool(cfg["f1_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -150,6 +158,7 @@ class TennisMonitor:
                             tracking_enabled: bool | None = None,
                             basketball_enabled: bool | None = None,
                             football_enabled: bool | None = None,
+                            f1_enabled: bool | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -170,6 +179,9 @@ class TennisMonitor:
         if football_enabled is not None:
             self.football_enabled = bool(football_enabled)
             update["football_enabled"] = self.football_enabled
+        if f1_enabled is not None:
+            self.f1_enabled = bool(f1_enabled)
+            update["f1_enabled"] = self.f1_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -241,6 +253,10 @@ class TennisMonitor:
             # via its own fixed sport-key list internally (whitelist=None).
             whitelist = FOOTBALL_WHITELIST_ODDSPAPI if self.football_provider == "oddspapi" else None
             plan.append(("football", self.football_provider, whitelist))
+        if self.f1_enabled:
+            # Only theoddsapi has an F1 sport at all (OddsPapi has none), so
+            # unlike football there's no provider choice to make here.
+            plan.append(("f1", "theoddsapi", None))
         return plan
 
     async def _scan_impl(self, dry_run_notify: bool) -> dict:
@@ -394,6 +410,7 @@ class TennisMonitor:
                 "basketball_enabled": self.basketball_enabled,
                 "football_enabled": self.football_enabled,
                 "football_provider": self.football_provider,
+                "f1_enabled": self.f1_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,
                 "tracking_enabled": self.tracking_enabled,
