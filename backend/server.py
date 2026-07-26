@@ -78,7 +78,6 @@ class SettingsIn(BaseModel):
     tracking_enabled: bool | None = None
     basketball_enabled: bool | None = None
     football_enabled: bool | None = None
-    f1_enabled: bool | None = None
     provider: str | None = None
     football_provider: str | None = None
     telegram_token: str | None = None
@@ -91,7 +90,6 @@ class SettingsOut(BaseModel):
     tracking_enabled: bool
     basketball_enabled: bool
     football_enabled: bool
-    f1_enabled: bool
     provider: str
     football_provider: str
     providers: list[str]
@@ -110,7 +108,6 @@ class StatusOut(BaseModel):
     tracking_enabled: bool
     basketball_enabled: bool
     football_enabled: bool
-    f1_enabled: bool
     provider: str
     football_provider: str
     use_mock_data: bool
@@ -136,8 +133,6 @@ def _quota_warning() -> str | None:
         in_use.add("oddspapi")  # basketball always runs on OddsPapi
     if monitor.football_enabled:
         in_use.add(monitor.football_provider)
-    if monitor.f1_enabled:
-        in_use.add("theoddsapi")  # F1 always runs on The Odds API
     msgs = []
     for key in sorted(in_use):
         client = monitor.clients.get(key)
@@ -177,7 +172,6 @@ async def get_status():
         tracking_enabled=monitor.tracking_enabled,
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
-        f1_enabled=monitor.f1_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         use_mock_data=monitor.client.use_mock,
@@ -228,7 +222,6 @@ def _settings_out() -> SettingsOut:
         tracking_enabled=monitor.tracking_enabled,
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
-        f1_enabled=monitor.f1_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         providers=list(monitor.clients.keys()),
@@ -254,7 +247,6 @@ async def update_settings(body: SettingsIn):
         tracking_enabled=body.tracking_enabled,
         basketball_enabled=body.basketball_enabled,
         football_enabled=body.football_enabled,
-        f1_enabled=body.f1_enabled,
         provider=body.provider,
         football_provider=body.football_provider,
         telegram_token=body.telegram_token,

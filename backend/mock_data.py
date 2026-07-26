@@ -29,11 +29,6 @@ _MATCHES = {
         ("La Liga", "Real Madrid", "Barcelona", 2.55, 2.70, 2.5, 1.80, 2.00),
         ("Champions League", "Bayern Munich", "Inter", 1.75, 4.50, 2.5, 1.70, 2.10),
     ],
-    # No totals market for F1 driver head-to-head specials.
-    "f1": [
-        ("Formula 1", "Max Verstappen", "Lando Norris", 1.65, 2.20, None, None, None),
-        ("Formula 1", "Charles Leclerc", "Carlos Sainz", 1.90, 1.90, None, None, None),
-    ],
 }
 
 
@@ -44,25 +39,21 @@ def build_mock_pinnacle_matches(sport: str, start_epoch: int, end_epoch: int) ->
         st = int((now + timedelta(minutes=10 + i * 12)).timestamp())
         if not (start_epoch < st <= end_epoch):
             continue
-        selections = [
-            {"market_key": "h2h", "market_name": H2H_MARKET_NAME,
-             "outcome": home, "point": None, "label": home, "price": hh},
-            {"market_key": "h2h", "market_name": H2H_MARKET_NAME,
-             "outcome": away, "point": None, "label": away, "price": ha},
-        ]
-        if line is not None:
-            selections += [
-                {"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
-                 "outcome": "Over", "point": line, "label": f"Over {line}", "price": over},
-                {"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
-                 "outcome": "Under", "point": line, "label": f"Under {line}", "price": under},
-            ]
         out.append({
             "match_id": f"mock-{sport}-{i}",
             "tournament": tour,
             "player1": home,
             "player2": away,
             "start_epoch": st,
-            "selections": selections,
+            "selections": [
+                {"market_key": "h2h", "market_name": H2H_MARKET_NAME,
+                 "outcome": home, "point": None, "label": home, "price": hh},
+                {"market_key": "h2h", "market_name": H2H_MARKET_NAME,
+                 "outcome": away, "point": None, "label": away, "price": ha},
+                {"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
+                 "outcome": "Over", "point": line, "label": f"Over {line}", "price": over},
+                {"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
+                 "outcome": "Under", "point": line, "label": f"Under {line}", "price": under},
+            ],
         })
     return out

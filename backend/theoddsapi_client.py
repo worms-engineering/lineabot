@@ -6,21 +6,12 @@ Exposes get_pinnacle_matches() returning the normalized shape the monitor uses:
 
 Tennis/basketball are per-tournament sport keys discovered dynamically by
 prefix (e.g. "tennis_atp_wimbledon") via the free /sports endpoint. Football
-and F1 instead use a fixed whitelist of sport keys (FOOTBALL_LEAGUE_KEYS:
-Europe's top-5 leagues + main UEFA cups; F1_SPORT_KEYS: "motorsport_f1")
-intersected with the active keys from /sports, since the generic "soccer_"
-prefix would otherwise pull in hundreds of minor leagues worldwide. Each
-active key costs regions x markets credits per scan (eu, h2h+totals -> 2
-credits/key; F1 only requests h2h -> 1 credit/key, since it has no totals
-market). Quota is read from the x-requests-remaining header.
-Key: THE_ODDS_API_KEY, falling back to ODDSPAPI_KEY.
-
-F1 has no team-vs-team fixtures: Pinnacle's only two-outcome market is the
-driver "Head to Head" special (one event per pilot pairing, no draw), which
-The Odds API exposes as a plain h2h event like any other sport - so it reuses
-the exact same parsing path as tennis/basketball/football below. There is no
-support here for the "outrights" race-winner market (20-way, doesn't fit the
-two-outcome H2H/totals shape the rest of the monitor assumes).
+instead uses a fixed whitelist of sport keys (FOOTBALL_LEAGUE_KEYS: Europe's
+top-5 leagues + main UEFA cups) intersected with the active keys from /sports,
+since the generic "soccer_" prefix would otherwise pull in hundreds of minor
+leagues worldwide. Each active key costs regions x markets credits per scan
+(eu, h2h+totals -> 2 credits/key). Quota is read from the x-requests-remaining
+header. Key: THE_ODDS_API_KEY, falling back to ODDSPAPI_KEY.
 """
 from __future__ import annotations
 
@@ -47,14 +38,6 @@ FOOTBALL_LEAGUE_KEYS = [
     "soccer_uefa_europa_league",           # Europa League
     "soccer_uefa_europa_conference_league",  # Conference League
 ]
-# F1: driver head-to-head specials. Only one key on The Odds API.
-F1_SPORT_KEYS = ["motorsport_f1"]
-# Whitelist-based sports (as opposed to prefix-discovered tennis/basketball),
-# each with its own market list -> get_events(sport_keys=..., markets=...).
-WHITELIST_SPORTS = {
-    "football": (FOOTBALL_LEAGUE_KEYS, "h2h,totals"),
-    "f1": (F1_SPORT_KEYS, "h2h"),  # no totals market for F1
-}
 DEFAULT_REGIONS = "eu"
 DEFAULT_MARKETS = "h2h,totals"
 
@@ -149,9 +132,8 @@ class TheOddsApiClient:
         """Normalized Pinnacle matches (H2H + totals) for a sport in the window."""
         if self.use_mock:
             return mock_data.build_mock_pinnacle_matches(sport, start_epoch, end_epoch)
-        if sport in WHITELIST_SPORTS:
-            sport_keys, markets = WHITELIST_SPORTS[sport]
-            events = await self.get_events(sport_keys=sport_keys, markets=markets)
+        if sport == "football":
+            events = await self.get_events(sport_keys=FOOTBALL_LEAGUE_KEYS)
         else:
             events = await self.get_events(prefix=SPORT_PREFIXES.get(sport, "tennis_"))
         out: list[dict] = []
