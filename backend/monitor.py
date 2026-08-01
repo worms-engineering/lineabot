@@ -55,6 +55,11 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     (None, "champions league", "contains"),
     (None, "europa league", "contains"),
     (None, "conference league", "contains"),
+    # Amichevoli: OddsPapi bundles ALL club friendlies worldwide under this one
+    # tournament name (from top-club preseason tours down to reserve/lower-league
+    # sides), no way to narrow it further by name - if it's too much noise, raise
+    # football_drop_threshold rather than trying to filter here.
+    (None, "friendly", "contains"),
 ]
 
 # Football on The Odds API uses a fixed sport-key whitelist instead
