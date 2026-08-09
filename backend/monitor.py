@@ -50,8 +50,10 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     ("spain", "laliga"),
     ("spain", "la liga"),
     ("italy", "serie a"),
+    ("italy", "coppa italia"),  # exact match: excludes "Coppa Italia Serie C"
     ("germany", "bundesliga"),
     ("france", "ligue 1"),
+    ("netherlands", "eredivisie"),  # exact match: excludes "Eredivisie SRL" (virtual)
     (None, "champions league", "contains"),
     (None, "europa league", "contains"),
     (None, "conference league", "contains"),
