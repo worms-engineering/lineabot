@@ -54,6 +54,7 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     ("germany", "bundesliga"),
     ("france", "ligue 1"),
     ("netherlands", "eredivisie"),  # exact match: excludes "Eredivisie SRL" (virtual)
+    ("portugal", "liga portugal"),  # exact match: excludes "Liga Portugal 2"/"3"
     (None, "champions league", "contains"),
     (None, "europa league", "contains"),
     (None, "conference league", "contains"),
