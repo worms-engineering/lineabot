@@ -313,13 +313,20 @@ class TennisMonitor:
                         fresh = (now_ts - prev_epoch) <= MAX_BASELINE_AGE_SECONDS
                     if prev_price and curr < prev_price:
                         drop_last = (prev_price - curr) / prev_price
-                        if fresh and drop_last >= threshold:
-                            is_drop = True
 
                 drop_from_open = (
                     (open_price - curr) / open_price
                     if open_price and curr < open_price else 0.0
                 )
+
+                # Require the price to actually be down from where it opened, not
+                # just from whatever it happened to read last scan. Thin-liquidity
+                # fixtures (e.g. lower-profile league matches) can flap a price back
+                # and forth between two levels scan to scan without ever really
+                # moving from open - gating on drop_from_open too kills those false
+                # alerts while still catching genuine (monotonic) steam.
+                if prev and fresh and drop_last >= threshold and drop_from_open >= threshold:
+                    is_drop = True
 
                 await self.db.line_state.update_one(
                     {"_id": key},

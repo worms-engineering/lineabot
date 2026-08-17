@@ -32,9 +32,21 @@ _MIN_REQUEST_INTERVAL = 1.05
 _MAX_RETRIES = 5
 
 SHARP_BOOK = "pinnacle"
-# Full-match/full-game totals sit above per-set (tennis) lines; combined with the
-# "/0/totals" period check this isolates the whole-event total from quarters/sets.
-MIN_TOTAL_LINE = 15.0
+# Whole-match total-line band per sport, used to isolate the real main total
+# from other markets that share the same "/0/totals" suffix:
+# - tennis/basketball: the floor excludes per-set/quarter totals (~8-13 resp.
+#   ~30-110), which sit well below the ~140-250 full-match total.
+# - football: goals totals sit around 0.5-6.5. A fixture ALSO carries a
+#   second, unrelated "/0/totals" market around 9-11 (almost certainly total
+#   corners) that independently carries its own mainLine flag - and OddsPapi's
+#   market order in the response is NOT stable between requests (confirmed by
+#   probing the same live fixture twice), so without the upper bound here the
+#   code would non-deterministically return corners instead of goals on some
+#   scans. (lo, hi) with hi=None means no ceiling.
+TOTAL_LINE_RANGE = {
+    "football": (0.5, 8.0),
+}
+DEFAULT_TOTAL_LINE_RANGE = (15.0, None)
 _TOTALS_OUTCOME_RE = re.compile(r"^(\d+(?:\.\d+)?)/(over|under)$")
 
 H2H_MARKET_NAME = "Match Winner"
@@ -123,7 +135,8 @@ def _pinnacle_h2h(book_odds: dict) -> dict | None:
     return None
 
 
-def _pinnacle_main_total(book_odds: dict) -> dict | None:
+def _pinnacle_main_total(book_odds: dict, sport: str) -> dict | None:
+    lo, hi = TOTAL_LINE_RANGE.get(sport, DEFAULT_TOTAL_LINE_RANGE)
     for market in (book_odds.get("markets") or {}).values():
         if market.get("marketActive") is False:
             continue
@@ -142,7 +155,7 @@ def _pinnacle_main_total(book_odds: dict) -> dict | None:
             if not m:
                 continue
             line = float(m.group(1))
-            if line < MIN_TOTAL_LINE:
+            if line < lo or (hi is not None and line > hi):
                 continue
             if player.get("mainLine"):
                 is_main = True
@@ -297,7 +310,7 @@ class OddsPapiClient:
                     selections.append({"market_key": "h2h", "market_name": H2H_MARKET_NAME,
                                        "outcome": "draw", "point": None, "label": "Pareggio",
                                        "price": h2h["draw"]})
-            total = _pinnacle_main_total(book)
+            total = _pinnacle_main_total(book, sport)
             if total:
                 selections.append({"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
                                    "outcome": "Over", "point": total["line"],
