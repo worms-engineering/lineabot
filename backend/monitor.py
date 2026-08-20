@@ -302,17 +302,30 @@ class TennisMonitor:
                 drop_last = 0.0
                 is_drop = False
                 prev_price = None
+                observations = 1
 
                 if prev:
+                    observations = int(prev.get("observations", 1)) + 1
                     open_price = prev.get("open_price") or prev.get("price") or curr
                     first_seen = prev.get("first_seen_at") or first_seen
-                    prev_price = prev.get("price")
-                    fresh = True
-                    prev_epoch = _parse_iso_epoch(prev.get("updated_at"))
-                    if prev_epoch is not None:
-                        fresh = (now_ts - prev_epoch) <= MAX_BASELINE_AGE_SECONDS
-                    if prev_price and curr < prev_price:
-                        drop_last = (prev_price - curr) / prev_price
+                    if observations >= 3:
+                        prev_price = prev.get("price")
+                        fresh = True
+                        prev_epoch = _parse_iso_epoch(prev.get("updated_at"))
+                        if prev_epoch is not None:
+                            fresh = (now_ts - prev_epoch) <= MAX_BASELINE_AGE_SECONDS
+                        if prev_price and curr < prev_price:
+                            drop_last = (prev_price - curr) / prev_price
+                    else:
+                        # Still building a reliable baseline: a newly-tracked
+                        # selection's very first tick can be a thin/unsettled
+                        # price before the market forms (seen live: a favorite's
+                        # opening quote read ~3.5, then immediately and
+                        # permanently settled around ~1.5 - comparing against
+                        # that first tick forever kept firing bogus alerts).
+                        # Re-anchor open_price to this second observation
+                        # instead of trusting the first one.
+                        open_price = curr
 
                 drop_from_open = (
                     (open_price - curr) / open_price
@@ -325,7 +338,8 @@ class TennisMonitor:
                 # and forth between two levels scan to scan without ever really
                 # moving from open - gating on drop_from_open too kills those false
                 # alerts while still catching genuine (monotonic) steam.
-                if prev and fresh and drop_last >= threshold and drop_from_open >= threshold:
+                if (prev and observations >= 3 and fresh
+                        and drop_last >= threshold and drop_from_open >= threshold):
                     is_drop = True
 
                 await self.db.line_state.update_one(
@@ -333,6 +347,7 @@ class TennisMonitor:
                     {"$set": {
                         "price": curr,
                         "open_price": open_price,
+                        "observations": observations,
                         "first_seen_at": first_seen,
                         "updated_at": now_dt.isoformat(),
                         "match_id": match_id,
