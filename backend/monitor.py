@@ -12,6 +12,7 @@ get_pinnacle_matches(); everything below is provider-agnostic.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -467,11 +468,12 @@ class TennisMonitor:
             start_str = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%H:%M UTC")
         meta = SPORT_META.get(match.get("sport"), {})
         sport_tag = f"{meta.get('emoji', '')} {meta.get('label', 'Tennis')}".strip()
+        esc = html.escape
         return (
-            f"<b>⬇️ PINNACLE DROP — {sport_tag}</b>\n"
-            f"{match.get('player1')} vs {match.get('player2')}\n"
-            f"{match.get('tournament') or ''} · start {start_str}\n"
-            f"{sel['market_name']} — <b>{sel['label']}</b>\n"
+            f"<b>⬇️ PINNACLE DROP — {esc(sport_tag)}</b>\n"
+            f"{esc(str(match.get('player1')))} vs {esc(str(match.get('player2')))}\n"
+            f"{esc(match.get('tournament') or '')} · start {start_str}\n"
+            f"{esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>\n"
             f"{prev_price:.2f} → <b>{curr:.2f}</b> (<b>-{drop_last * 100:.1f}%</b>)\n"
             f"da apertura: -{drop_from_open * 100:.1f}%"
         )

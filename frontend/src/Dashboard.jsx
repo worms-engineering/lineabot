@@ -558,8 +558,8 @@ export default function Dashboard() {
             {alerts.length === 0 && (
               <div className="text-zinc-600 py-6 text-center">Nessun alert ancora. I cali di quota Pinnacle verranno stampati qui.</div>
             )}
-            {alerts.map((a) => (
-              <div key={a.created_at + a.label} className="py-1 border-b border-white/5 flex items-start gap-3" data-testid="alert-row">
+            {alerts.map((a, i) => (
+              <div key={`${i}-${a.created_at}-${a.label}`} className="py-1 border-b border-white/5 flex items-start gap-3" data-testid="alert-row">
                 <span className="text-zinc-600">{new Date(a.created_at).toLocaleTimeString()}</span>
                 {a.telegram_ok ? <CheckCircle2 size={12} className="text-[#32D74B] shrink-0 mt-0.5" /> : <XCircle size={12} className="text-[#FF3B30] shrink-0 mt-0.5" />}
                 <span className="text-zinc-300">
