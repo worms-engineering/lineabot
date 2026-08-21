@@ -21,6 +21,7 @@ from typing import Any
 from theoddsapi_client import TheOddsApiClient
 from oddspapi_client import OddsPapiClient
 from telegram_client import TelegramClient
+from key_rotation import generate_oddspapi_key, KeyRotationError
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,10 @@ MIN_LEAD_SECONDS = 90
 DEFAULT_DROP_THRESHOLD = 0.05
 MAX_BASELINE_AGE_SECONDS = 30 * 60
 LINE_STATE_TTL_SECONDS = 6 * 60 * 60
+
+# Minimum time between auto key-rotation attempts, so a broken generator
+# (site down, signup captcha...) doesn't get hammered every scan.
+ROTATION_COOLDOWN_SECONDS = 5 * 60
 
 DEFAULT_PROVIDER = "theoddsapi"
 
@@ -129,6 +134,10 @@ class TennisMonitor:
         # Providers we've already sent a "quota exhausted" Telegram alert for,
         # so we don't re-alert on every scan while it stays exhausted.
         self._quota_alerted: set[str] = set()
+        # Auto key-rotation state (OddsPapi only; The Odds API can't self-serve).
+        self._last_rotation_attempt: datetime | None = None
+        self.last_rotation_at: datetime | None = None
+        self.last_rotation_error: str | None = None
 
     @property
     def client(self):
@@ -157,6 +166,11 @@ class TennisMonitor:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
                 self.football_provider = cfg["football_provider"]
+            # OddsPapi key can be rotated at runtime (see key_rotation.py);
+            # the env var only bootstraps the first deploy.
+            oddspapi_key = cfg.get("oddspapi_api_key")
+            if oddspapi_key:
+                self.clients["oddspapi"].api_key = oddspapi_key
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
             if token:
@@ -173,7 +187,8 @@ class TennisMonitor:
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
-                            telegram_chat_id: str | None = None):
+                            telegram_chat_id: str | None = None,
+                            oddspapi_api_key: str | None = None):
         update: dict[str, Any] = {}
         if drop_threshold is not None:
             self.drop_threshold = float(drop_threshold)
@@ -209,6 +224,9 @@ class TennisMonitor:
         if telegram_chat_id is not None:
             self.telegram.chat_id = telegram_chat_id
             update["telegram_chat_id"] = telegram_chat_id
+        if oddspapi_api_key is not None:
+            self.clients["oddspapi"].api_key = oddspapi_api_key
+            update["oddspapi_api_key"] = oddspapi_api_key
         if update:
             await self.db.settings.update_one(
                 {"_id": "config"}, {"$set": update}, upsert=True
@@ -222,6 +240,52 @@ class TennisMonitor:
         await self.save_settings(provider=provider)
         return self.provider
 
+    async def _maybe_rotate_oddspapi_key(self):
+        """Swap in a freshly generated OddsPapi key when the current one's
+        quota is exhausted. Cooldown-limited; notifies via Telegram on both
+        success and (once per outage) failure so silent coverage loss is
+        impossible."""
+        oddspapi = self.clients["oddspapi"]
+        if not oddspapi.quota_exhausted:
+            return
+        now = _now()
+        if (self._last_rotation_attempt is not None
+                and (now - self._last_rotation_attempt).total_seconds()
+                < ROTATION_COOLDOWN_SECONDS):
+            return
+        self._last_rotation_attempt = now
+        try:
+            new_key = await generate_oddspapi_key()
+        except KeyRotationError as e:
+            logger.error("OddsPapi key rotation failed: %s", e)
+            self.last_rotation_error = str(e)
+            if not getattr(self, "_rotation_fail_alerted", False):
+                self._rotation_fail_alerted = True
+                try:
+                    await self.telegram.send_message(
+                        "⚠️ <b>Quota OddsPapi esaurita</b>\n"
+                        "Tentativo di rotazione automatica della key fallito:\n"
+                        f"<code>{str(e)[:300]}</code>\n"
+                        "Riprovo ogni 5 minuti.")
+                except Exception:
+                    logger.exception("rotation-failure telegram notify failed")
+            return
+        await self.save_settings(oddspapi_api_key=new_key)
+        oddspapi.quota_exhausted = False
+        self.last_rotation_at = now
+        self.last_rotation_error = None
+        self._rotation_fail_alerted = False
+        self._quota_alerted.discard("oddspapi")
+        try:
+            await self.telegram.send_message(
+                "🔄 <b>Key OddsPapi ruotata automaticamente</b>\n"
+                "Quota esaurita rilevata: generata e attivata una nuova key "
+                f"(ultima 8: <code>{new_key[-8:]}</code>).\n"
+                "Nessuna interruzione di copertura necessaria.")
+        except Exception:
+            logger.exception("rotation telegram notify failed")
+        logger.info("OddsPapi key rotated automatically")
+
     async def scan_once(self, force: bool = False, dry_run_notify: bool = False) -> dict:
         async with self._lock:
             started = _now()
@@ -230,6 +294,10 @@ class TennisMonitor:
                 self.last_scan_stats = {"skipped": True, "tracking_enabled": False}
                 return self.last_scan_stats
             try:
+                if not dry_run_notify:
+                    # Best-effort key rotation before scanning, so a quota
+                    # death costs at most one scan cycle of coverage.
+                    await self._maybe_rotate_oddspapi_key()
                 result = await self._scan_impl(dry_run_notify=dry_run_notify)
                 self.last_scan_at = started
                 self.last_scan_error = None
@@ -464,6 +532,10 @@ class TennisMonitor:
 
     async def _notify_quota_exhausted(self, provider: str):
         if provider in self._quota_alerted:
+            return
+        if provider == "oddspapi":
+            # OddsPapi quota is handled by automatic key rotation, which sends
+            # its own (success/failure) notifications - don't double-alert.
             return
         self._quota_alerted.add(provider)
         label = PROVIDER_LABELS.get(provider, provider)

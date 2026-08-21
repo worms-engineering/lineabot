@@ -116,6 +116,8 @@ class StatusOut(BaseModel):
     use_mock_data: bool
     requests_remaining: int | None
     quota_warning: str | None
+    last_key_rotation_at: str | None
+    last_key_rotation_error: str | None
 
 
 class TrackingIn(BaseModel):
@@ -183,6 +185,8 @@ async def get_status():
         use_mock_data=monitor.client.use_mock,
         requests_remaining=monitor.client.requests_remaining,
         quota_warning=_quota_warning(),
+        last_key_rotation_at=monitor.last_rotation_at.isoformat() if monitor.last_rotation_at else None,
+        last_key_rotation_error=monitor.last_rotation_error,
     )
 
 
