@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒" };
 
 function fmtTime(ts) {
   if (!ts) return "—";
@@ -258,6 +258,17 @@ export default function Dashboard() {
     }
   };
 
+  const hockey = !!status?.hockey_enabled;
+  const toggleHockey = async () => {
+    try {
+      await axios.put(`${API}/settings`, { hockey_enabled: !hockey });
+      toast[!hockey ? "success" : "info"](`Hockey ${!hockey ? "attivato" : "disattivato"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const footballProvider = status?.football_provider;
   const setFootballProvider = async (p) => {
     if (!p || p === footballProvider) return;
@@ -308,7 +319,7 @@ export default function Dashboard() {
             <div className={`w-2 h-2 rounded-full ${tracking ? "bg-[#32D74B] pulse-dot" : "bg-zinc-600"}`} />
             <span className="font-display uppercase tracking-tight text-xl font-bold">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
           </div>
-          <span className="text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket &amp; Calcio · H2H &amp; Totals</span>
+          <span className="text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket, Calcio &amp; Hockey · H2H &amp; Totals</span>
         </div>
 
         <div className="flex items-center gap-6">
@@ -371,6 +382,19 @@ export default function Dashboard() {
             }`}
           >
             ⚽ {football ? "ON" : "OFF"}
+          </button>
+
+          <button
+            data-testid="hockey-toggle"
+            onClick={toggleHockey}
+            title="Traccia anche l'hockey su ghiaccio (via OddsPapi)"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              hockey
+                ? "border-[#64D2FF]/40 bg-[#64D2FF]/10 text-[#64D2FF] hover:bg-[#64D2FF]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🏒 {hockey ? "ON" : "OFF"}
           </button>
 
           {football && (

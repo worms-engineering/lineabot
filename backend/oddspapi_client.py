@@ -25,7 +25,7 @@ import mock_data
 BASE_URL = "https://api.oddspapi.io/v4"
 TENNIS_SPORT_ID = 12
 # Canonical sport key -> OddsPapi sportId.
-SPORT_IDS = {"tennis": 12, "basketball": 11, "football": 10}
+SPORT_IDS = {"tennis": 12, "basketball": 11, "football": 10, "hockey": 15}
 TOURNAMENT_CHUNK_SIZE = 5
 _BOOKMAKER_CHUNK_LIMITS = {"betfair-ex": 3}
 _MIN_REQUEST_INTERVAL = 1.05
@@ -45,6 +45,8 @@ SHARP_BOOK = "pinnacle"
 #   scans. (lo, hi) with hi=None means no ceiling.
 TOTAL_LINE_RANGE = {
     "football": (0.5, 8.0),
+    # Whole-match goals totals; Pinnacle hockey mains sit ~4.5-6.5.
+    "hockey": (3.5, 8.0),
 }
 DEFAULT_TOTAL_LINE_RANGE = (15.0, None)
 _TOTALS_OUTCOME_RE = re.compile(r"^(\d+(?:\.\d+)?)/(over|under)$")
@@ -234,11 +236,18 @@ class OddsPapiClient:
 
     async def get_fixtures(self, start_from_epoch: int, start_to_epoch: int,
                            sport_id: int = TENNIS_SPORT_ID) -> list[dict]:
-        data = await self._get("/fixtures", {
-            "sportId": sport_id,
-            "from": _to_iso(start_from_epoch),
-            "to": _to_iso(start_to_epoch),
-        })
+        try:
+            data = await self._get("/fixtures", {
+                "sportId": sport_id,
+                "from": _to_iso(start_from_epoch),
+                "to": _to_iso(start_to_epoch),
+            })
+        except httpx.HTTPStatusError as e:
+            # The API 404s when the window contains no fixtures at all, which
+            # is normal for sparse sports/off-season - not an error.
+            if e.response.status_code == 404:
+                return []
+            raise
         return data if isinstance(data, list) else []
 
     async def get_odds_by_tournaments(self, bookmaker: str, tournament_ids: list[int],

@@ -39,6 +39,12 @@ DEFAULT_PROVIDER = "theoddsapi"
 # NBA + NBA Summer League + WNBA + EuroBasket. Edit to taste.
 BASKETBALL_WHITELIST = ["nba", "wnba", "eurobasket"]
 
+# Hockey runs on OddsPapi. Left open (None): the hockey calendar is small
+# enough (even in-season a 1h window sees a handful of leagues) and Pinnacle
+# prices it densely, including minor leagues. Restrict with exact 2-tuples
+# like football if the off-season friendlies get noisy.
+HOCKEY_WHITELIST = None
+
 # Football whitelist for OddsPapi (worldwide calendar, so plain substrings
 # would false-match: "bundesliga" also sits inside "2. Bundesliga", "laliga"
 # inside "LaLiga2", etc). Domestic top flights use EXACT tournament-name
@@ -73,6 +79,7 @@ SPORT_META = {
     "tennis": {"label": "Tennis", "emoji": "🎾"},
     "basketball": {"label": "Basket", "emoji": "🏀"},
     "football": {"label": "Calcio", "emoji": "⚽"},
+    "hockey": {"label": "Hockey", "emoji": "🏒"},
 }
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
@@ -114,6 +121,7 @@ class TennisMonitor:
         self.tracking_enabled = True
         self.basketball_enabled = True
         self.football_enabled = True
+        self.hockey_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -143,6 +151,8 @@ class TennisMonitor:
                 self.basketball_enabled = bool(cfg["basketball_enabled"])
             if "football_enabled" in cfg:
                 self.football_enabled = bool(cfg["football_enabled"])
+            if "hockey_enabled" in cfg:
+                self.hockey_enabled = bool(cfg["hockey_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -159,6 +169,7 @@ class TennisMonitor:
                             tracking_enabled: bool | None = None,
                             basketball_enabled: bool | None = None,
                             football_enabled: bool | None = None,
+                            hockey_enabled: bool | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -179,6 +190,9 @@ class TennisMonitor:
         if football_enabled is not None:
             self.football_enabled = bool(football_enabled)
             update["football_enabled"] = self.football_enabled
+        if hockey_enabled is not None:
+            self.hockey_enabled = bool(hockey_enabled)
+            update["hockey_enabled"] = self.hockey_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -250,6 +264,8 @@ class TennisMonitor:
             # via its own fixed sport-key list internally (whitelist=None).
             whitelist = FOOTBALL_WHITELIST_ODDSPAPI if self.football_provider == "oddspapi" else None
             plan.append(("football", self.football_provider, whitelist))
+        if self.hockey_enabled:
+            plan.append(("hockey", "oddspapi", HOCKEY_WHITELIST))
         return plan
 
     async def _scan_impl(self, dry_run_notify: bool) -> dict:
@@ -425,6 +441,7 @@ class TennisMonitor:
                 "basketball_enabled": self.basketball_enabled,
                 "football_enabled": self.football_enabled,
                 "football_provider": self.football_provider,
+                "hockey_enabled": self.hockey_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,
                 "tracking_enabled": self.tracking_enabled,
