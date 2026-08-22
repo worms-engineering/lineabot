@@ -574,16 +574,16 @@ class TennisMonitor:
     async def _notify_quota_exhausted(self, provider: str):
         if provider in self._quota_alerted:
             return
-        if provider == "oddspapi":
-            # OddsPapi quota is handled by automatic key rotation, which sends
-            # its own (success/failure) notifications - don't double-alert.
-            return
         self._quota_alerted.add(provider)
         label = PROVIDER_LABELS.get(provider, provider)
+        hint = (
+            "\n💡 Genera una nuova key e aggiorna ODDSPAPI_KEY (Variables) "
+            "su Railway, poi redeploy." if provider == "oddspapi" else ""
+        )
         text = (
             f"<b>⚠️ Quota API esaurita — {label}</b>\n"
             f"Lo scan per gli sport che usano questo provider è sospeso finché "
-            f"la quota non si resetta."
+            f"la quota non si resetta.{hint}"
         )
         try:
             await self.telegram.send_message(text)
