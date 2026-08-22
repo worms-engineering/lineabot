@@ -1,0 +1,10 @@
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/.venv
+**/node_modules
+frontend
+.claude
+*.md
+backend/.env
