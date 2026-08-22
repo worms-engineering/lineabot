@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -245,7 +246,11 @@ class TennisMonitor:
         """Swap in a freshly generated OddsPapi key when the current one's
         quota is exhausted. Cooldown-limited; notifies via Telegram on both
         success and (once per outage) failure so silent coverage loss is
-        impossible."""
+        impossible. Disabled unless ODDSPAPI_AUTO_ROTATE=true: the automated
+        signups from a datacenter IP are what got the original host blocked,
+        so keys are changed by hand by default."""
+        if os.environ.get("ODDSPAPI_AUTO_ROTATE", "false").lower() != "true":
+            return
         oddspapi = self.clients["oddspapi"]
         if not oddspapi.quota_exhausted:
             return
