@@ -582,11 +582,14 @@ export default function Dashboard() {
             {alerts.length === 0 && (
               <div className="text-zinc-600 py-6 text-center">Nessun alert ancora. I cali di quota Pinnacle verranno stampati qui.</div>
             )}
-            {alerts.map((a, i) => (
-              <div key={`${i}-${a.created_at}-${a.label}`} className="py-1 border-b border-white/5 flex items-start gap-3" data-testid="alert-row">
+            {alerts.map((a, i) => {
+              const underway = a.start_epoch && a.start_epoch * 1000 <= now;
+              return (
+              <div key={`${i}-${a.created_at}-${a.label}`} className={`py-1 border-b border-white/5 flex items-start gap-3 ${underway ? "opacity-50" : ""}`} data-testid="alert-row">
                 <span className="text-zinc-600">{new Date(a.created_at).toLocaleTimeString()}</span>
                 {a.telegram_ok ? <CheckCircle2 size={12} className="text-[#32D74B] shrink-0 mt-0.5" /> : <XCircle size={12} className="text-[#FF3B30] shrink-0 mt-0.5" />}
                 <span className="text-zinc-300">
+                  {underway && <span title="Match già iniziato" className="mr-1 text-zinc-500">▶</span>}
                   {SPORT_EMOJI[a.sport] ? `${SPORT_EMOJI[a.sport]} ` : ""}
                   <span className="text-white">{a.player1} vs {a.player2}</span>
                   <span className="text-zinc-600"> · {a.market_name} — </span>
@@ -596,7 +599,8 @@ export default function Dashboard() {
                   <span className="ml-2 text-[#32D74B]">-{(a.drop_last * 100).toFixed(1)}%</span>
                 </span>
               </div>
-            ))}
+              );
+            })}
           </section>
         </main>
       </div>

@@ -373,6 +373,15 @@ class TennisMonitor:
 
         for match in matches:
             match_id = match.get("match_id")
+            start_epoch = match.get("start_epoch")
+            if start_epoch is not None and start_epoch <= now_ts:
+                # Match already underway: the 90s fetch-time lead is not
+                # enough on its own - scans take 10-30s (rate-limited) and
+                # OddsPapi shifts startTime on delays, which can push a
+                # started fixture back into the window with a minutes-old
+                # baseline. In-play prices would read as huge "drops", so
+                # don't track or alert on it at all.
+                continue
             provider = match.get("provider", self.provider)
             sport = match.get("sport", "tennis")
             threshold = self.football_drop_threshold if sport == "football" else self.drop_threshold
@@ -459,6 +468,7 @@ class TennisMonitor:
                         "player1": match.get("player1"),
                         "player2": match.get("player2"),
                         "tournament": match.get("tournament"),
+                        "start_epoch": start_epoch,
                         "market_name": sel["market_name"],
                         "label": sel["label"],
                         "prev_price": round(prev_price, 3) if prev_price else None,
