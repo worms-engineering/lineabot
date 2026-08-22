@@ -370,6 +370,7 @@ class OddsPapiClient:
             if selections:
                 out.append({
                     "match_id": fx["fixtureId"],
+                    "tournament_id": fx["tournamentId"],
                     "tournament": fx.get("tournamentName"),
                     "player1": p1,
                     "player2": p2,

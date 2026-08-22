@@ -597,6 +597,9 @@ export default function Dashboard() {
                   <span className="text-zinc-600"> · </span>
                   {a.prev_price?.toFixed(2)} → <span className="text-white">{a.price?.toFixed(2)}</span>
                   <span className="ml-2 text-[#32D74B]">-{(a.drop_last * 100).toFixed(1)}%</span>
+                  {a.best_book_it && a.best_price_it != null && (
+                    <span className="ml-2 text-[#64D2FF]">🇮🇹 {a.best_book_it} {a.best_price_it.toFixed(2)}</span>
+                  )}
                 </span>
               </div>
               );

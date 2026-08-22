@@ -44,6 +44,43 @@ DEFAULT_MARKETS = "h2h,totals"
 H2H_MARKET_NAME = "Match Winner"
 TOTALS_MARKET_NAME = "Total"
 
+# Italy-licensed books carried by The Odds API (bet365.it / bwin.it /
+# Unibet.it / William Hill .it share their .com odds feed). The purely
+# Italian brands (SNAI/Eurobet/Goldbet/Sisal) exist only on OddsPapi, whose
+# soft-book payloads have empty outcome ids - unusable for this feature.
+ITALY_BOOKS = {
+    "bet365": "bet365.it",
+    "bwin": "bwin.it",
+    "unibet": "Unibet.it",
+    "williamhill": "WilliamHill.it",
+}
+
+# OddsPapi tournament-name substring -> The Odds API sport key, used to
+# locate the same match on The Odds API for the best-Italy-price lookup.
+LEAGUE_SPORT_KEYS = [
+    ("premier league", "soccer_epl"),
+    ("laliga", "soccer_spain_la_liga"),
+    ("la liga", "soccer_spain_la_liga"),
+    ("serie a", "soccer_italy_serie_a"),
+    ("bundesliga", "soccer_germany_bundesliga"),
+    ("ligue 1", "soccer_france_ligue_one"),
+    ("champions league", "soccer_uefa_champs_league"),
+    ("europa league", "soccer_uefa_europa_league"),
+    ("conference league", "soccer_uefa_europa_conference_league"),
+]
+
+
+def _norm_name(s) -> str:
+    """Normalize a team/player name for cross-provider matching: lowercase,
+    strip accents, collapse spaces, and undo OddsPapi's 'Last, First'."""
+    import unicodedata
+    s = str(s or "").strip().lower()
+    if "," in s:
+        last, _, first = s.partition(",")
+        s = f"{first.strip()} {last.strip()}"
+    s = unicodedata.normalize("NFKD", s)
+    return " ".join("".join(ch for ch in s if not unicodedata.combining(ch)).split())
+
 
 def _iso_epoch(value) -> int | None:
     if not value:
@@ -126,6 +163,71 @@ class TheOddsApiClient:
             if isinstance(data, list):
                 events.extend(data)
         return events
+
+    async def get_best_italy_price(self, tournament: str | None, start_epoch: int,
+                                   home: str, away: str, market_key: str,
+                                   outcome: str, point) -> dict | None:
+        """Best price among the Italy-licensed books for one selection, or
+        None if the match/selection can't be matched. Football only (the
+        league must map via LEAGUE_SPORT_KEYS); costs ~1 credit per call.
+        outcome: 'home'|'away'|'draw' for h2h, 'over'|'under' for totals."""
+        if not self.api_key or self.use_mock:
+            return None
+        if self.quota_exhausted or (self.requests_remaining is not None
+                                    and self.requests_remaining <= 0):
+            return None
+        if market_key == "h2h":
+            target = {"home": home, "away": away, "draw": "Draw"}.get(outcome)
+        elif market_key == "totals":
+            target = {"over": "Over", "under": "Under"}.get(outcome)
+        else:
+            return None
+        if not target:
+            return None
+        tname = (tournament or "").lower()
+        sport_key = next((k for pat, k in LEAGUE_SPORT_KEYS if pat in tname), None)
+        if sport_key is None:
+            return None
+        params = {
+            "regions": "eu",
+            "markets": market_key,
+            "oddsFormat": "decimal",
+            "bookmakers": ",".join(ITALY_BOOKS),
+            "commenceTimeFrom": datetime.fromtimestamp(
+                start_epoch - 30 * 60, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "commenceTimeTo": datetime.fromtimestamp(
+                start_epoch + 30 * 60, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        try:
+            events = await self._get(f"/sports/{sport_key}/odds", params)
+        except Exception:
+            return None
+        if not isinstance(events, list):
+            return None
+        n_home, n_away = _norm_name(home), _norm_name(away)
+        ev = next((e for e in events
+                   if {_norm_name(e.get("home_team")), _norm_name(e.get("away_team"))}
+                   == {n_home, n_away}), None)
+        if ev is None:
+            return None
+        best: dict | None = None
+        n_target = _norm_name(target)
+        for b in ev.get("bookmakers") or []:
+            for mk in b.get("markets") or []:
+                if mk.get("key") != market_key:
+                    continue
+                for o in mk.get("outcomes") or []:
+                    if point is not None and o.get("point") != point:
+                        continue
+                    if _norm_name(o.get("name")) != n_target:
+                        continue
+                    price = o.get("price")
+                    if price is None:
+                        continue
+                    if best is None or price > best["price"]:
+                        best = {"bookmaker": ITALY_BOOKS.get(b.get("key"), b.get("key")),
+                                "price": float(price)}
+        return best
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int, end_epoch: int,
                                    tournament_filter=None) -> list[dict]:
