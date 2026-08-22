@@ -168,10 +168,13 @@ class TennisMonitor:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
                 self.football_provider = cfg["football_provider"]
-            # OddsPapi key can be rotated at runtime (see key_rotation.py);
-            # the env var only bootstraps the first deploy.
+            # OddsPapi key: the env var (ODDSPAPI_KEY) takes precedence over
+            # any key stored here, so rotating = updating it on the host and
+            # redeploying - no Mongo access needed. The DB copy only applies
+            # when no env var is set.
             oddspapi_key = cfg.get("oddspapi_api_key")
-            if oddspapi_key:
+            env_key = os.environ.get("ODDSPAPI_KEY")
+            if oddspapi_key and not env_key:
                 self.clients["oddspapi"].api_key = oddspapi_key
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
