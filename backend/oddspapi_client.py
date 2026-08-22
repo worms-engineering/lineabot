@@ -113,15 +113,35 @@ def _matches_whitelist(fx: dict, patterns) -> bool:
     return False
 
 
+def _market_family(bookmaker_market_id: str) -> int:
+    """Family segment of a market id like 'line/29/1980/.../0/moneyline' ->
+    1980. The canonical match market always carries the lowest family id;
+    higher ones are secondary variants (specials/simulated) that appear and
+    disappear with unstable ordering between requests."""
+    try:
+        return int(bookmaker_market_id.split("/")[2])
+    except (IndexError, ValueError):
+        return float("inf")
+
+
 def _pinnacle_h2h(book_odds: dict) -> dict | None:
     """Sharp moneyline prices. Returns {"home": price, "away": price} and,
     for sports with a draw (football's 1X2), also {"draw": price}. Tennis and
     basketball fixtures simply never carry a "draw" outcome, so this is a
-    no-op for them."""
+    no-op for them.
+
+    A fixture can expose several /0/moneyline markets at once (seen live on
+    Premier League rounds: the true match odds family alongside a more
+    balanced second one). Market order in the response is NOT stable, so
+    picking the first one made consecutive scans compare prices from two
+    different markets -> giant phantom "drops" (Hull 9.3 -> 1.8). Pick
+    deterministically by lowest family id instead."""
+    best: tuple[int, dict] | None = None
     for market in (book_odds.get("markets") or {}).values():
         if market.get("marketActive") is False:
             continue
-        if not (market.get("bookmakerMarketId") or "").endswith("/0/moneyline"):
+        mid = market.get("bookmakerMarketId") or ""
+        if not mid.endswith("/0/moneyline"):
             continue
         sides: dict[str, float] = {}
         for outcome in (market.get("outcomes") or {}).values():
@@ -133,18 +153,24 @@ def _pinnacle_h2h(book_odds: dict) -> dict | None:
             if boid in ("home", "away", "draw"):
                 sides[boid] = float(price)
         if "home" in sides and "away" in sides:
-            return sides
-    return None
+            fam = _market_family(mid)
+            if best is None or fam < best[0]:
+                best = (fam, sides)
+    return best[1] if best else None
 
 
 def _pinnacle_main_total(book_odds: dict, sport: str) -> dict | None:
     lo, hi = TOTAL_LINE_RANGE.get(sport, DEFAULT_TOTAL_LINE_RANGE)
+    # Prefer the canonical (lowest-id) market family first, lowest main line
+    # within it - same determinism rule as _pinnacle_h2h.
+    best: tuple[int, float, dict] | None = None
     for market in (book_odds.get("markets") or {}).values():
         if market.get("marketActive") is False:
             continue
         # "/0/totals" = whole-event period: excludes tennis set totals and
         # basketball quarter/half totals (which use /1, /2, ...).
-        if not (market.get("bookmakerMarketId") or "").endswith("/0/totals"):
+        mid = market.get("bookmakerMarketId") or ""
+        if not mid.endswith("/0/totals"):
             continue
         sides: dict[str, dict] = {}
         is_main = False
@@ -163,10 +189,14 @@ def _pinnacle_main_total(book_odds: dict, sport: str) -> dict | None:
                 is_main = True
             sides[m.group(2)] = {"price": float(price), "line": line}
         if is_main and "over" in sides and "under" in sides:
-            return {"line": sides["over"]["line"],
+            cand = {"line": sides["over"]["line"],
                     "over_price": sides["over"]["price"],
                     "under_price": sides["under"]["price"]}
-    return None
+            fam = _market_family(mid)
+            rank = (fam, cand["line"])
+            if best is None or rank < (best[0], best[1]):
+                best = (fam, cand["line"], cand)
+    return best[2] if best else None
 
 
 class OddsPapiClient:
