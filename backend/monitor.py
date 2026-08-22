@@ -134,6 +134,7 @@ class TennisMonitor:
         # Providers we've already sent a "quota exhausted" Telegram alert for,
         # so we don't re-alert on every scan while it stays exhausted.
         self._quota_alerted: set[str] = set()
+        self._ipblock_alerted: set[str] = set()
         # Auto key-rotation state (OddsPapi only; The Odds API can't self-serve).
         self._last_rotation_attempt: datetime | None = None
         self.last_rotation_at: datetime | None = None
@@ -360,6 +361,11 @@ class TennisMonitor:
                     await self._notify_quota_exhausted(prov)
             else:
                 self._quota_alerted.discard(prov)  # quota ok/reset: re-arm the alert
+            if getattr(client, "ip_blocked", False):
+                if not dry_run_notify:
+                    await self._notify_ip_blocked(prov)
+            else:
+                self._ipblock_alerted.discard(prov)
             if raw is None:
                 continue
             for m in raw:
@@ -539,6 +545,23 @@ class TennisMonitor:
         if sport_errors:
             stats["sport_errors"] = sport_errors
         return stats
+
+    async def _notify_ip_blocked(self, provider: str):
+        if provider in self._ipblock_alerted:
+            return
+        self._ipblock_alerted.add(provider)
+        label = PROVIDER_LABELS.get(provider, provider)
+        text = (
+            f"<b>🚫 {label} risponde 403 Forbidden</b>\n"
+            f"Il server del monitor sembra bloccato a livello di IP (non è un "
+            f"problema di key: la rotazione automatica non può risolverlo). "
+            f" Gli sport su questo provider sono sospesi finché il blocco non "
+            f"viene rimosso."
+        )
+        try:
+            await self.telegram.send_message(text)
+        except Exception as e:
+            logger.warning("ip-block telegram alert failed: %s", e)
 
     async def _notify_quota_exhausted(self, provider: str):
         if provider in self._quota_alerted:

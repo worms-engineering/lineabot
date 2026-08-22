@@ -179,6 +179,7 @@ class OddsPapiClient:
         self._next_request_at = 0.0
         self.requests_remaining: int | None = None  # OddsPapi has no quota header
         self.quota_exhausted = False
+        self.ip_blocked = False
 
     async def close(self):
         await self._client.aclose()
@@ -197,6 +198,14 @@ class OddsPapiClient:
         for attempt in range(_MAX_RETRIES + 1):
             await self._pace()
             resp = await self._client.get(url, params=params)
+            if resp.status_code == 403:
+                # Bare 403 (invalid keys get a clean 401 INVALID_API_KEY):
+                # OddsPapi is blocking this server's IP. Key rotation can't
+                # fix an IP block, so surface it distinctly.
+                self.ip_blocked = True
+                raise RuntimeError(
+                    f"OddsPapi returned 403 Forbidden on {path} - the server "
+                    f"IP appears to be blocked (not a key problem)")
             if resp.status_code == 429:
                 # 429 is used both for transient rate limiting (RATE_LIMITED,
                 # retry) and for the permanent monthly quota (REQUEST_LIMIT_
@@ -220,6 +229,7 @@ class OddsPapiClient:
                 raise RuntimeError(f"OddsPapi v4 error on {path}: "
                                    f"{err.get('message')} ({err.get('code')})")
             self.quota_exhausted = False
+            self.ip_blocked = False
             return data
         resp.raise_for_status()
         return resp.json()
