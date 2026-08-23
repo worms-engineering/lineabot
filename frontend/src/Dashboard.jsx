@@ -20,6 +20,14 @@ const API = `${BACKEND_URL}/api`;
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
 const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒" };
 
+// A match is "underway/over" for the alert log if its start time has passed,
+// or if it's an old pre-fix alert (no start_epoch) older than a few hours -
+// every match from that long ago has certainly finished.
+function isUnderway(a, nowMs) {
+  if (a.start_epoch) return a.start_epoch * 1000 <= nowMs;
+  return nowMs - new Date(a.created_at).getTime() > 6 * 3600 * 1000;
+}
+
 function fmtTime(ts) {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -43,6 +51,7 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [minDrop, setMinDrop] = useState(0);
   const [onlyDrops, setOnlyDrops] = useState(false);
+  const [hideStarted, setHideStarted] = useState(false);
   const [now, setNow] = useState(Date.now());
   const scanningRef = useRef(false);
   const [soundEnabled, setSoundEnabled] = useState(() => {
@@ -577,13 +586,24 @@ export default function Dashboard() {
               <div className="flex items-center gap-2 text-zinc-500 uppercase tracking-widest text-[10px]">
                 <Send size={12} /> Drop alert log
               </div>
-              <span className="text-zinc-600">{alerts.length} events</span>
+              <div className="flex items-center gap-3">
+                <button
+                  data-testid="toggle-hide-started"
+                  onClick={() => setHideStarted(v => !v)}
+                  className={`text-[10px] uppercase tracking-widest border px-2 py-1 transition-colors ${
+                    hideStarted ? "border-[#32D74B]/40 bg-[#32D74B]/10 text-[#32D74B]" : "border-white/15 text-zinc-500 hover:bg-white/5"
+                  }`}
+                >
+                  Nascondi iniziati
+                </button>
+                <span className="text-zinc-600">{alerts.length} events</span>
+              </div>
             </div>
             {alerts.length === 0 && (
               <div className="text-zinc-600 py-6 text-center">Nessun alert ancora. I cali di quota Pinnacle verranno stampati qui.</div>
             )}
-            {alerts.map((a, i) => {
-              const underway = a.start_epoch && a.start_epoch * 1000 <= now;
+            {alerts.filter(a => !(hideStarted && isUnderway(a, now))).map((a, i) => {
+              const underway = isUnderway(a, now);
               return (
               <div key={`${i}-${a.created_at}-${a.label}`} className={`py-1 border-b border-white/5 flex items-start gap-3 ${underway ? "opacity-50" : ""}`} data-testid="alert-row">
                 <span className="text-zinc-600">{new Date(a.created_at).toLocaleTimeString()}</span>
