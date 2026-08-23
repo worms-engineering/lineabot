@@ -31,6 +31,10 @@ _KALSHI_MARKETS = "https://api.elections.kalshi.com/trade-api/v2/markets"
 POLYMARKET_TAGS = {
     "basketball": ["nba", "wnba"],
     "football": ["epl", "ucl"],
+    # Per-match tennis moneylines; outcomes are last names, matched via
+    # word overlap; stale/resolved events are rejected by the time gate
+    # and the 2%-97% probability band.
+    "tennis": ["tennis"],
 }
 # sport -> Kalshi game-winner series tickers. Basketball only for now:
 # football titles are city-based and error-prone to match.
