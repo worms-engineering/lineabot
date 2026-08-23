@@ -240,7 +240,10 @@ class TheOddsApiClient:
                     if price is None:
                         continue
                     if is_ex:
-                        betfair = float(price)  # best back price on the exchange
+                        # The exchange can list parallel h2h markets (main +
+                        # secondary line): keep the best back price.
+                        if betfair is None or price > betfair:
+                            betfair = float(price)
                     elif best is None or price > best["price"]:
                         best = {"bookmaker": ITALY_BOOKS.get(b.get("key"), b.get("key")),
                                 "price": float(price)}
