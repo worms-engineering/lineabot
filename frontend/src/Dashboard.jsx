@@ -600,6 +600,9 @@ export default function Dashboard() {
                   {a.best_book_it && a.best_price_it != null && (
                     <span className="ml-2 text-[#64D2FF]">🇮🇹 {a.best_book_it} {a.best_price_it.toFixed(2)}</span>
                   )}
+                  {a.betfair_price != null && (
+                    <span className="ml-2 text-[#FFD60A]">BF {a.betfair_price.toFixed(2)}</span>
+                  )}
                 </span>
               </div>
               );

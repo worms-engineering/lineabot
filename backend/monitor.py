@@ -465,15 +465,17 @@ class TennisMonitor:
 
                 if is_drop:
                     drops_found += 1
-                    best_it = await self._best_italian_price(match, sel, sport, provider)
+                    ctx = await self._alert_market_context(match, sel, sport)
                     text = self._format_drop_alert(match, sel, prev_price, curr,
-                                                   drop_last, drop_from_open, best_it)
+                                                   drop_last, drop_from_open, ctx)
                     tg_result = {"ok": False}
                     if not dry_run_notify:
                         try:
                             tg_result = await self.telegram.send_message(text)
                         except Exception as e:
                             tg_result = {"ok": False, "error": str(e)}
+                    best_it = (ctx or {}).get("best_it")
+                    betfair = (ctx or {}).get("betfair")
                     await self.db.alerts.insert_one({
                         "_id": str(uuid.uuid4()),
                         "type": "drop",
@@ -492,6 +494,7 @@ class TennisMonitor:
                         "drop_from_open": round(drop_from_open, 4),
                         "best_book_it": best_it.get("bookmaker") if best_it else None,
                         "best_price_it": round(best_it["price"], 3) if best_it else None,
+                        "betfair_price": round(betfair, 3) if betfair else None,
                         "telegram_ok": bool(tg_result.get("ok")),
                         "telegram_response": tg_result,
                         "message": text,
@@ -574,13 +577,12 @@ class TennisMonitor:
         except Exception as e:
             logger.warning("ip-block telegram alert failed: %s", e)
 
-    async def _best_italian_price(self, match: dict, sel: dict, sport: str,
-                                  provider: str) -> dict | None:
-        """Best Italy-available-book price for the alerted selection, right
-        now. Football only, resolved via The Odds API (its Italy-licensed
-        books have clean structured data; OddsPapi's soft books don't).
-        Best-effort: missing key/exhausted quota/unmatched match just omits
-        the info from the alert."""
+    async def _alert_market_context(self, match: dict, sel: dict, sport: str) -> dict | None:
+        """Best Italy-available-book price + Betfair Exchange price for the
+        alerted selection, right now. Football only, resolved via The Odds
+        API in one request (its Italy-licensed books and the exchange have
+        clean structured data; OddsPapi's soft books don't). Best-effort:
+        missing key/exhausted quota/unmatched match just omits the info."""
         client = self.clients.get("theoddsapi")
         if sport != "football" or client is None:
             return None
@@ -588,13 +590,13 @@ class TennisMonitor:
         if not start_epoch:
             return None
         try:
-            return await client.get_best_italy_price(
+            return await client.get_alert_market_context(
                 match.get("tournament"), start_epoch,
                 match.get("player1"), match.get("player2"),
                 sel["market_key"], (sel.get("outcome") or "").lower(), sel.get("point"),
             )
         except Exception as e:
-            logger.warning("best IT price lookup failed: %s", e)
+            logger.warning("alert market context lookup failed: %s", e)
             return None
 
     async def _notify_quota_exhausted(self, provider: str):
@@ -618,7 +620,7 @@ class TennisMonitor:
 
     def _format_drop_alert(self, match: dict, sel: dict, prev_price: float,
                            curr: float, drop_last: float, drop_from_open: float,
-                           best_it: dict | None = None) -> str:
+                           ctx: dict | None = None) -> str:
         start_ts = match.get("start_epoch")
         start_str = ""
         if start_ts:
@@ -626,17 +628,22 @@ class TennisMonitor:
         meta = SPORT_META.get(match.get("sport"), {})
         sport_tag = f"{meta.get('emoji', '')} {meta.get('label', 'Tennis')}".strip()
         esc = html.escape
-        it_line = ""
+        ctx = ctx or {}
+        best_it = ctx.get("best_it")
+        betfair = ctx.get("betfair")
+        extra = ""
         if best_it:
             edge = (best_it["price"] - curr) / curr * 100 if curr else 0
-            it_line = (f"\n🇮🇹 Miglior prezzo ITA: <b>{esc(best_it['bookmaker'])}</b> "
-                       f"@ <b>{best_it['price']:.2f}</b> (Pinnacle {curr:.2f}, "
-                       f"{'+' if edge >= 0 else ''}{edge:.1f}%)")
+            extra += (f"\n🇮🇹 Miglior prezzo ITA: <b>{esc(best_it['bookmaker'])}</b> "
+                      f"@ <b>{best_it['price']:.2f}</b> (Pinnacle {curr:.2f}, "
+                      f"{'+' if edge >= 0 else ''}{edge:.1f}%)")
+        if betfair:
+            extra += f"\n📊 Betfair EX: <b>{betfair:.2f}</b>"
         return (
             f"<b>⬇️ PINNACLE DROP — {esc(sport_tag)}</b>\n"
             f"{esc(str(match.get('player1')))} vs {esc(str(match.get('player2')))}\n"
             f"{esc(match.get('tournament') or '')} · start {start_str}\n"
             f"{esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>\n"
             f"{prev_price:.2f} → <b>{curr:.2f}</b> (<b>-{drop_last * 100:.1f}%</b>)\n"
-            f"da apertura: -{drop_from_open * 100:.1f}%{it_line}"
+            f"da apertura: -{drop_from_open * 100:.1f}%{extra}"
         )

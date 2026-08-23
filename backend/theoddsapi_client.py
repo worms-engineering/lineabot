@@ -55,6 +55,10 @@ ITALY_BOOKS = {
     "williamhill": "WilliamHill.it",
 }
 
+# Second sharp source for cross-checking drops: Betfair's exchange (best
+# available back price), carried by The Odds API in the uk region.
+SHARP_EXCHANGE = ("betfair_ex_uk", "Betfair EX")
+
 # OddsPapi tournament-name substring -> The Odds API sport key, used to
 # locate the same match on The Odds API for the best-Italy-price lookup.
 LEAGUE_SPORT_KEYS = [
@@ -164,12 +168,15 @@ class TheOddsApiClient:
                 events.extend(data)
         return events
 
-    async def get_best_italy_price(self, tournament: str | None, start_epoch: int,
-                                   home: str, away: str, market_key: str,
-                                   outcome: str, point) -> dict | None:
-        """Best price among the Italy-licensed books for one selection, or
-        None if the match/selection can't be matched. Football only (the
-        league must map via LEAGUE_SPORT_KEYS); costs ~1 credit per call.
+    async def get_alert_market_context(self, tournament: str | None, start_epoch: int,
+                                       home: str, away: str, market_key: str,
+                                       outcome: str, point) -> dict | None:
+        """Alert-time context for one selection: the best price among the
+        Italy-licensed books AND the Betfair Exchange price (second sharp
+        source to cross-check the Pinnacle drop). One combined request
+        (regions eu,uk -> 2 credits); returns {"best_it": {...}|None,
+        "betfair": price|None}, or None if the match can't be matched.
+        Football only (league must map via LEAGUE_SPORT_KEYS).
         outcome: 'home'|'away'|'draw' for h2h, 'over'|'under' for totals."""
         if not self.api_key or self.use_mock:
             return None
@@ -188,20 +195,26 @@ class TheOddsApiClient:
         sport_key = next((k for pat, k in LEAGUE_SPORT_KEYS if pat in tname), None)
         if sport_key is None:
             return None
-        params = {
-            "regions": "eu",
+        base_params = {
             "markets": market_key,
             "oddsFormat": "decimal",
-            "bookmakers": ",".join(ITALY_BOOKS),
             "commenceTimeFrom": datetime.fromtimestamp(
                 start_epoch - 30 * 60, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "commenceTimeTo": datetime.fromtimestamp(
                 start_epoch + 30 * 60, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        all_books = list(ITALY_BOOKS) + [SHARP_EXCHANGE[0]]
         try:
-            events = await self._get(f"/sports/{sport_key}/odds", params)
+            events = await self._get(f"/sports/{sport_key}/odds", {
+                **base_params, "regions": "eu,uk", "bookmakers": ",".join(all_books)})
         except Exception:
-            return None
+            # Exchange bookmaker key may change/disappear; retry IT-only.
+            try:
+                events = await self._get(f"/sports/{sport_key}/odds", {
+                    **base_params, "regions": "eu",
+                    "bookmakers": ",".join(ITALY_BOOKS)})
+            except Exception:
+                return None
         if not isinstance(events, list):
             return None
         n_home, n_away = _norm_name(home), _norm_name(away)
@@ -211,8 +224,10 @@ class TheOddsApiClient:
         if ev is None:
             return None
         best: dict | None = None
+        betfair: float | None = None
         n_target = _norm_name(target)
         for b in ev.get("bookmakers") or []:
+            is_ex = b.get("key") == SHARP_EXCHANGE[0]
             for mk in b.get("markets") or []:
                 if mk.get("key") != market_key:
                     continue
@@ -224,10 +239,14 @@ class TheOddsApiClient:
                     price = o.get("price")
                     if price is None:
                         continue
-                    if best is None or price > best["price"]:
+                    if is_ex:
+                        betfair = float(price)  # best back price on the exchange
+                    elif best is None or price > best["price"]:
                         best = {"bookmaker": ITALY_BOOKS.get(b.get("key"), b.get("key")),
                                 "price": float(price)}
-        return best
+        if best is None and betfair is None:
+            return None
+        return {"best_it": best, "betfair": betfair}
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int, end_epoch: int,
                                    tournament_filter=None) -> list[dict]:
