@@ -38,6 +38,21 @@ KALSHI_SERIES = {
     "basketball": ["KXNBAGAME", "KXWNBAGAME"],
 }
 
+# ---- F1 tracking (Polymarket as source, Kalshi as cross-check) ----
+# Polymarket event-title suffixes worth tracking; the rest (practice,
+# qualifying, fastest lap, props) is noise with no liquidity.
+F1_EVENT_MARKETS = [
+    ("Driver Winner", "winner", "Race Winner"),
+    ("Driver Podium Finish", "podium", "Podium"),
+    ("Head-to-Head", "h2h", "Head-to-Head"),
+]
+# Only track selections priced inside this probability band: outside it the
+# decimal odds are unusable (2000.0) and the spread dwarfs any signal.
+F1_PROB_BAND = (0.02, 0.97)
+
+_F1_YES_Q = re.compile(r"^Will\s+(.+?)\s+(?:win|finish|get|achieve)\b", re.I)
+_F1_H2H_Q = re.compile(r"^Who will finish higher:\s*(.+?)\s+or\s+(.+?)\?\s*$", re.I)
+
 # Words too generic to identify a team on their own ("Manchester United" vs
 # "Manchester City" share "manchester"; "City"/"United" match half of England).
 _GENERIC_WORDS = {"city", "united", "fc", "ac", "sc", "real", "athletic",
@@ -207,3 +222,130 @@ async def kalshi_price(sport: str, home: str, away: str,
                             logger.info("kalshi %s: %s @ %s", series, side, price)
                         return price
     return None
+
+
+async def kalshi_f1_price(driver: str, start_epoch: int) -> float | None:
+    """Decimal odds for a driver to win the upcoming F1 race on Kalshi
+    (KXF1RACE series, 'Will X win ... Grand Prix?' markets), or None."""
+    if not driver:
+        return None
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            r = await client.get(_KALSHI_MARKETS, params={
+                "series_ticker": "KXF1RACE", "status": "open", "limit": 200})
+            data = r.json() if r.status_code == 200 else {}
+        except Exception:
+            return None
+    win_q = re.compile(r"^Will\s+(.+?)\s+win\b", re.I)
+    for m in (data or {}).get("markets") or []:
+        mt = win_q.match(str(m.get("title") or ""))
+        if not mt or not _same_team(mt.group(1), driver):
+            continue
+        close_ts = _parse_ts(m.get("close_time"))
+        if close_ts is not None and abs(close_ts - start_epoch) > 72 * 3600:
+            continue
+        cents = m.get("yes_ask") or m.get("yes_bid")
+        return _to_decimal((cents or 0) / 100) if cents else None
+    return None
+
+
+class PredictionMarketsClient:
+    """Monitor-compatible client that tracks F1 on Polymarket (primary) and
+    cross-checks on Kalshi. Probabilities convert to decimal odds so drops/
+    steam behave like every other sport. Keyless and quota-free."""
+    name = "prediction"
+
+    def __init__(self):
+        self.api_key = None
+        self.use_mock = False
+        self.requests_remaining = None
+        self.quota_exhausted = False
+        self.ip_blocked = False
+
+    async def close(self):
+        pass
+
+    async def get_pinnacle_matches(self, sport: str, start_epoch: int,
+                                   end_epoch: int, tournament_filter=None):
+        if sport != "f1":
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(_GAMMA_EVENTS, params={
+                    "limit": 500, "active": "true", "closed": "false",
+                    "tag_slug": "f1"})
+                events = r.json() if r.status_code == 200 else []
+        except Exception:
+            return []
+        out: list[dict] = []
+        for e in events if isinstance(events, list) else []:
+            title = str(e.get("title") or "")
+            gp = title.split(":")[0].strip()
+            suffix = title.split(":", 1)[1].strip() if ":" in title else ""
+            spec = next((t for t in F1_EVENT_MARKETS
+                         if t[0].lower() == suffix.lower()), None)
+            if spec is None or not gp:
+                continue
+            _, mkey, mlabel = spec
+            selections: list[dict] = []
+            start_ts: int | None = None
+            pair_cache: dict[str, dict] = {}
+            for m in e.get("markets") or []:
+                game_ts = (_parse_ts(m.get("gameStartTime"))
+                           or _parse_ts(e.get("endDate")))
+                if game_ts is None or not (start_epoch < game_ts <= end_epoch):
+                    continue
+                try:
+                    outcomes = m.get("outcomes")
+                    prices = m.get("outcomePrices")
+                    if isinstance(outcomes, str):
+                        outcomes = json.loads(outcomes)
+                    if isinstance(prices, str):
+                        prices = json.loads(prices)
+                except Exception:
+                    continue
+                if not outcomes or not prices or len(outcomes) != len(prices):
+                    continue
+                start_ts = game_ts if start_ts is None else min(start_ts, game_ts)
+                q = str(m.get("question") or "")
+                if mkey == "h2h":
+                    hq = _F1_H2H_Q.match(q)
+                    if not hq:
+                        continue
+                    a, b = hq.group(1).strip(), hq.group(2).strip()
+                    pid = f"pm-{e.get('id')}-{m.get('id')}"
+                    pair = pair_cache.setdefault(pid, {
+                        "match_id": pid, "tournament": f"F1 · {gp}",
+                        "player1": a, "player2": b, "start_epoch": game_ts,
+                        "selections": []})
+                    for name, p in zip(outcomes, prices):
+                        price = _to_decimal(p)
+                        if price and F1_PROB_BAND[0] <= float(p) <= F1_PROB_BAND[1]:
+                            pair["selections"].append({
+                                "market_key": "h2h", "market_name": "Head-to-Head",
+                                "outcome": name, "point": None, "label": name,
+                                "price": price})
+                    continue
+                yq = _F1_YES_Q.match(q)
+                if not yq or not outcomes or outcomes[0].lower() != "yes":
+                    continue
+                driver = yq.group(1).strip()
+                p = float(prices[0]) if prices else 0
+                price = _to_decimal(p)
+                if price and F1_PROB_BAND[0] <= p <= F1_PROB_BAND[1]:
+                    selections.append({
+                        "market_key": mkey, "market_name": mlabel,
+                        "outcome": driver, "point": None, "label": driver,
+                        "price": price})
+            for pair in pair_cache.values():
+                if len(pair["selections"]) == 2:
+                    out.append(pair)
+            if selections and start_ts:
+                out.append({
+                    "match_id": f"pm-{e.get('id')}-{mkey}",
+                    "tournament": f"F1 · {gp}",
+                    "player1": gp, "player2": mlabel,
+                    "start_epoch": start_ts,
+                    "selections": selections,
+                })
+        return out

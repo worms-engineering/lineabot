@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", f1: "🏎️" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -278,6 +278,17 @@ export default function Dashboard() {
     }
   };
 
+  const f1 = !!status?.f1_enabled;
+  const toggleF1 = async () => {
+    try {
+      await axios.put(`${API}/settings`, { f1_enabled: !f1 });
+      toast[!f1 ? "success" : "info"](`Formula 1 ${!f1 ? "attivata" : "disattivata"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const footballProvider = status?.football_provider;
   const setFootballProvider = async (p) => {
     if (!p || p === footballProvider) return;
@@ -404,6 +415,19 @@ export default function Dashboard() {
             }`}
           >
             🏒 {hockey ? "ON" : "OFF"}
+          </button>
+
+          <button
+            data-testid="f1-toggle"
+            onClick={toggleF1}
+            title="Traccia i mercati Formula 1 su Polymarket (winner, podio, H2H) con cross-check Kalshi"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              f1
+                ? "border-[#FF2D55]/40 bg-[#FF2D55]/10 text-[#FF2D55] hover:bg-[#FF2D55]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🏎 {f1 ? "ON" : "OFF"}
           </button>
 
           {football && (
@@ -565,7 +589,9 @@ export default function Dashboard() {
                     </Td>
                     <Td>
                       <div className="flex flex-col leading-tight">
-                        <span className="text-white">{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</span>
+                        <span className="text-white">
+                          {r.match.player2 ? <>{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</> : r.match.player1}
+                        </span>
                         <span className="text-[10px] text-zinc-500 uppercase tracking-widest">{r.match.sport_emoji} {r.match.tournament}</span>
                       </div>
                     </Td>

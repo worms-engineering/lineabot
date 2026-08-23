@@ -24,6 +24,7 @@ from oddspapi_client import OddsPapiClient
 from telegram_client import TelegramClient
 from key_rotation import generate_oddspapi_key, KeyRotationError
 import prediction_markets as pmk
+from prediction_markets import PredictionMarketsClient
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ SPORT_META = {
     "basketball": {"label": "Basket", "emoji": "🏀"},
     "football": {"label": "Calcio", "emoji": "⚽"},
     "hockey": {"label": "Hockey", "emoji": "🏒"},
+    "f1": {"label": "Formula 1", "emoji": "🏎️"},
 }
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
@@ -117,6 +119,7 @@ class TennisMonitor:
         self.clients = {
             "theoddsapi": TheOddsApiClient(),
             "oddspapi": OddsPapiClient(),
+            "prediction": PredictionMarketsClient(),
         }
         self.provider = DEFAULT_PROVIDER
         self.football_provider = "oddspapi"  # switch to "theoddsapi" later in-season
@@ -129,6 +132,7 @@ class TennisMonitor:
         self.basketball_enabled = True
         self.football_enabled = True
         self.hockey_enabled = True
+        self.f1_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -165,6 +169,8 @@ class TennisMonitor:
                 self.football_enabled = bool(cfg["football_enabled"])
             if "hockey_enabled" in cfg:
                 self.hockey_enabled = bool(cfg["hockey_enabled"])
+            if "f1_enabled" in cfg:
+                self.f1_enabled = bool(cfg["f1_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -190,6 +196,7 @@ class TennisMonitor:
                             basketball_enabled: bool | None = None,
                             football_enabled: bool | None = None,
                             hockey_enabled: bool | None = None,
+                            f1_enabled: bool | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -214,6 +221,9 @@ class TennisMonitor:
         if hockey_enabled is not None:
             self.hockey_enabled = bool(hockey_enabled)
             update["hockey_enabled"] = self.hockey_enabled
+        if f1_enabled is not None:
+            self.f1_enabled = bool(f1_enabled)
+            update["f1_enabled"] = self.f1_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -344,6 +354,8 @@ class TennisMonitor:
             plan.append(("football", self.football_provider, whitelist))
         if self.hockey_enabled:
             plan.append(("hockey", "oddspapi", HOCKEY_WHITELIST))
+        if self.f1_enabled:
+            plan.append(("f1", "prediction", None))
         return plan
 
     async def _scan_impl(self, dry_run_notify: bool) -> dict:
@@ -356,9 +368,15 @@ class TennisMonitor:
         sport_errors: dict[str, str] = {}
         for sport, prov, whitelist in self._scan_plan():
             client = self.clients[prov]
+            # F1 races are weekly events: track the whole race weekend ahead
+            # instead of the 60-minute match window.
+            if sport == "f1":
+                sport_ws, sport_we = now_ts + 60, now_ts + 4 * 86400
+            else:
+                sport_ws, sport_we = window_start, end_ts
             raw: list[dict] | None = None
             try:
-                raw = await client.get_pinnacle_matches(sport, window_start, end_ts, whitelist)
+                raw = await client.get_pinnacle_matches(sport, sport_ws, sport_we, whitelist)
             except Exception as e:
                 logger.warning("scan sport=%s provider=%s failed: %s", sport, prov, e)
                 sport_errors[sport] = str(e)
@@ -564,6 +582,7 @@ class TennisMonitor:
                 "basketball_enabled": self.basketball_enabled,
                 "football_enabled": self.football_enabled,
                 "football_provider": self.football_provider,
+                "f1_enabled": self.f1_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,
@@ -632,6 +651,16 @@ class TennisMonitor:
         if sel["market_key"] != "h2h" or not side:
             side = None
 
+        async def kalshi_f1_lookup() -> None:
+            if sport != "f1" or sel["market_key"] != "winner":
+                return
+            try:
+                p = await pmk.kalshi_f1_price(side or sel.get("label"), start_epoch)
+                if p:
+                    ctx["kalshi"] = p
+            except Exception as e:
+                logger.warning("kalshi f1 lookup failed: %s", e)
+
         async def pm_lookup() -> None:
             if not side:
                 return
@@ -652,7 +681,8 @@ class TennisMonitor:
             except Exception as e:
                 logger.warning("kalshi lookup failed: %s", e)
 
-        await asyncio.gather(oddsapi_lookup(), pm_lookup(), kalshi_lookup())
+        await asyncio.gather(oddsapi_lookup(), pm_lookup(), kalshi_lookup(),
+                             kalshi_f1_lookup())
         return ctx or None
 
     async def _notify_quota_exhausted(self, provider: str):
@@ -702,9 +732,18 @@ class TennisMonitor:
             (("Polymarket", polymarket), ("Kalshi", kalshi)) if p)
         if pred:
             extra += f"\n🎯 {pred}"
+        p1, p2 = match.get("player1"), match.get("player2")
+        if p2 and match.get("sport") == "f1" and match.get("player2") in ("Race Winner", "Podium"):
+            pairing = f"{esc(str(p1))} · {esc(str(p2))}"
+        elif p2:
+            pairing = f"{esc(str(p1))} vs {esc(str(p2))}"
+        else:
+            pairing = esc(str(p1))
+        header = ("📉 STEAM — " if match.get("sport") == "f1"
+                  else "⬇️ PINNACLE DROP — ") + esc(sport_tag)
         return (
-            f"<b>⬇️ PINNACLE DROP — {esc(sport_tag)}</b>\n"
-            f"{esc(str(match.get('player1')))} vs {esc(str(match.get('player2')))}\n"
+            f"<b>{header}</b>\n"
+            f"{pairing}\n"
             f"{esc(match.get('tournament') or '')} · start {start_str}\n"
             f"{esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>\n"
             f"{prev_price:.2f} → <b>{curr:.2f}</b> (<b>-{drop_last * 100:.1f}%</b>)\n"
