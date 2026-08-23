@@ -23,6 +23,7 @@ from theoddsapi_client import TheOddsApiClient
 from oddspapi_client import OddsPapiClient
 from telegram_client import TelegramClient
 from key_rotation import generate_oddspapi_key, KeyRotationError
+import prediction_markets as pmk
 
 logger = logging.getLogger(__name__)
 
@@ -476,6 +477,8 @@ class TennisMonitor:
                             tg_result = {"ok": False, "error": str(e)}
                     best_it = (ctx or {}).get("best_it")
                     betfair = (ctx or {}).get("betfair")
+                    polymarket = (ctx or {}).get("polymarket")
+                    kalshi = (ctx or {}).get("kalshi")
                     await self.db.alerts.insert_one({
                         "_id": str(uuid.uuid4()),
                         "type": "drop",
@@ -495,6 +498,8 @@ class TennisMonitor:
                         "best_book_it": best_it.get("bookmaker") if best_it else None,
                         "best_price_it": round(best_it["price"], 3) if best_it else None,
                         "betfair_price": round(betfair, 3) if betfair else None,
+                        "polymarket_price": round(polymarket, 3) if polymarket else None,
+                        "kalshi_price": round(kalshi, 3) if kalshi else None,
                         "telegram_ok": bool(tg_result.get("ok")),
                         "telegram_response": tg_result,
                         "message": text,
@@ -578,26 +583,57 @@ class TennisMonitor:
             logger.warning("ip-block telegram alert failed: %s", e)
 
     async def _alert_market_context(self, match: dict, sel: dict, sport: str) -> dict | None:
-        """Best Italy-available-book price + Betfair Exchange price for the
-        alerted selection, right now. Football only, resolved via The Odds
-        API in one request (its Italy-licensed books and the exchange have
-        clean structured data; OddsPapi's soft books don't). Best-effort:
-        missing key/exhausted quota/unmatched match just omits the info."""
-        client = self.clients.get("theoddsapi")
-        if sport != "football" or client is None:
-            return None
+        """Cross-check prices for the alerted selection, right now:
+        - football: best Italy-book price + Betfair EX via The Odds API
+          (one request) plus Polymarket;
+        - basketball: Polymarket + Kalshi (keyless, quota-free).
+        Best-effort: every failure just omits its piece from the alert."""
         start_epoch = match.get("start_epoch")
         if not start_epoch:
             return None
-        try:
-            return await client.get_alert_market_context(
-                match.get("tournament"), start_epoch,
-                match.get("player1"), match.get("player2"),
-                sel["market_key"], (sel.get("outcome") or "").lower(), sel.get("point"),
-            )
-        except Exception as e:
-            logger.warning("alert market context lookup failed: %s", e)
-            return None
+        home, away = match.get("player1"), match.get("player2")
+        ctx: dict[str, Any] = {}
+        outcome = (sel.get("outcome") or "").lower()
+
+        async def oddsapi_lookup() -> None:
+            client = self.clients.get("theoddsapi")
+            if (sport != "football" or client is None or sel["market_key"] != "h2h"):
+                return
+            try:
+                r = await client.get_alert_market_context(
+                    match.get("tournament"), start_epoch, home, away,
+                    sel["market_key"], outcome, sel.get("point"))
+                if r:
+                    ctx.update(r)
+            except Exception as e:
+                logger.warning("oddsapi alert context failed: %s", e)
+
+        side = {"home": home, "away": away}.get(outcome)
+        if sel["market_key"] != "h2h" or not side:
+            side = None
+
+        async def pm_lookup() -> None:
+            if not side:
+                return
+            try:
+                p = await pmk.polymarket_price(sport, home, away, start_epoch, side)
+                if p:
+                    ctx["polymarket"] = p
+            except Exception as e:
+                logger.warning("polymarket lookup failed: %s", e)
+
+        async def kalshi_lookup() -> None:
+            if not side or sport not in pmk.KALSHI_SERIES:
+                return
+            try:
+                p = await pmk.kalshi_price(sport, home, away, start_epoch, side)
+                if p:
+                    ctx["kalshi"] = p
+            except Exception as e:
+                logger.warning("kalshi lookup failed: %s", e)
+
+        await asyncio.gather(oddsapi_lookup(), pm_lookup(), kalshi_lookup())
+        return ctx or None
 
     async def _notify_quota_exhausted(self, provider: str):
         if provider in self._quota_alerted:
@@ -631,6 +667,8 @@ class TennisMonitor:
         ctx = ctx or {}
         best_it = ctx.get("best_it")
         betfair = ctx.get("betfair")
+        polymarket = ctx.get("polymarket")
+        kalshi = ctx.get("kalshi")
         extra = ""
         if best_it:
             edge = (best_it["price"] - curr) / curr * 100 if curr else 0
@@ -639,6 +677,11 @@ class TennisMonitor:
                       f"{'+' if edge >= 0 else ''}{edge:.1f}%)")
         if betfair:
             extra += f"\n📊 Betfair EX: <b>{betfair:.2f}</b>"
+        pred = " · ".join(
+            f"{label} <b>{p:.2f}</b>" for label, p in
+            (("Polymarket", polymarket), ("Kalshi", kalshi)) if p)
+        if pred:
+            extra += f"\n🎯 {pred}"
         return (
             f"<b>⬇️ PINNACLE DROP — {esc(sport_tag)}</b>\n"
             f"{esc(str(match.get('player1')))} vs {esc(str(match.get('player2')))}\n"

@@ -603,6 +603,12 @@ export default function Dashboard() {
                   {a.betfair_price != null && (
                     <span className="ml-2 text-[#FFD60A]">BF {a.betfair_price.toFixed(2)}</span>
                   )}
+                  {a.polymarket_price != null && (
+                    <span className="ml-2 text-[#BF5AF2]">PM {a.polymarket_price.toFixed(2)}</span>
+                  )}
+                  {a.kalshi_price != null && (
+                    <span className="ml-2 text-[#FF9F0A]">KS {a.kalshi_price.toFixed(2)}</span>
+                  )}
                 </span>
               </div>
               );
