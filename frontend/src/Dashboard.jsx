@@ -573,7 +573,12 @@ export default function Dashboard() {
                     <Td className="text-white">{r.label}</Td>
                     <Td className="text-right text-zinc-500">{r.open_price?.toFixed(2)}</Td>
                     <Td className="text-right text-white font-semibold">{r.price?.toFixed(2)}</Td>
-                    <Td className="text-right"><DropBadge drop={r.drop_from_open} isDrop={r.is_drop} /></Td>
+                    <Td className="text-right">
+                      <DropBadge drop={r.drop_from_open} isDrop={r.is_drop} />
+                      {r.suspect_live && (
+                        <span className="ml-1 text-[9px] uppercase tracking-widest text-[#FF3B30]" title="Possibile match in corso: alert sospesi">live?</span>
+                      )}
+                    </Td>
                   </tr>
                 ))}
               </tbody>

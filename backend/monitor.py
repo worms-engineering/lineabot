@@ -441,13 +441,30 @@ class TennisMonitor:
                     if open_price and curr < open_price else 0.0
                 )
 
+                # In-play oscillation detector: same-day (pn-feed) tennis has
+                # no status flag and unreliable start times, but in-play
+                # prices oscillate (drop AND bounce), while genuine prematch
+                # steam is directional. A >=3% bounce once, or >=1.5% twice,
+                # marks the selection suspect-live: keep tracking it, never
+                # alert on it again.
+                rises = int((prev or {}).get("rises", 0))
+                suspect_live = bool((prev or {}).get("suspect_live"))
+                if prev_price and curr > prev_price:
+                    bounce = (curr - prev_price) / prev_price
+                    if bounce >= 0.03:
+                        rises += 2
+                    elif bounce >= 0.015:
+                        rises += 1
+                if rises >= 2:
+                    suspect_live = True
+
                 # Require the price to actually be down from where it opened, not
                 # just from whatever it happened to read last scan. Thin-liquidity
                 # fixtures (e.g. lower-profile league matches) can flap a price back
                 # and forth between two levels scan to scan without ever really
                 # moving from open - gating on drop_from_open too kills those false
                 # alerts while still catching genuine (monotonic) steam.
-                if (prev and observations >= 3 and fresh
+                if (prev and observations >= 3 and fresh and not suspect_live
                         and drop_last >= threshold and drop_from_open >= threshold):
                     is_drop = True
 
@@ -457,6 +474,8 @@ class TennisMonitor:
                         "price": curr,
                         "open_price": open_price,
                         "observations": observations,
+                        "rises": rises,
+                        "suspect_live": suspect_live,
                         "first_seen_at": first_seen,
                         "updated_at": now_dt.isoformat(),
                         "match_id": match_id,
@@ -514,6 +533,7 @@ class TennisMonitor:
                     "drop_from_open": round(drop_from_open, 4),
                     "drop_last": round(drop_last, 4),
                     "is_drop": is_drop,
+                    "suspect_live": suspect_live,
                 })
 
             if line_rows:

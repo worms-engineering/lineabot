@@ -326,6 +326,11 @@ class OddsPapiClient:
         for fx in await self.get_fixtures(start_epoch, end_epoch, sport_id):
             if not fx.get("hasOdds") or not _is_real_event(fx):
                 continue
+            # statusId (id-feed only): 0=prelive, 1=live, 2=ended. The pn
+            # (same-day) feed never sets it - those are handled downstream
+            # by the oscillation detector in the monitor.
+            if fx.get("statusId") in (1, 2):
+                continue
             if not _matches_whitelist(fx, tournament_filter):
                 continue
             st = _iso_epoch(fx.get("startTime"))
