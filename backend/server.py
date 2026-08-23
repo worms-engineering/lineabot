@@ -28,6 +28,9 @@ logging.basicConfig(
 logger = logging.getLogger("tennis-monitor")
 
 REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))  # 6 refresh / ora
+# Fast F1 loop (prediction markets are keyless/free, so it doesn't consume
+# any provider quota). 0 disables it.
+F1_REFRESH_SECONDS = int(os.environ.get("F1_REFRESH_SECONDS", "60"))
 
 mongo_url = os.environ["MONGO_URL"]
 db_name = os.environ["DB_NAME"]
@@ -57,6 +60,21 @@ async def lifespan(app: FastAPI):
         logger.info("Scheduler started - scan every %d minutes", REFRESH_MINUTES)
     else:
         logger.info("Automatic scheduler disabled (REFRESH_MINUTES=%s) - scans are on-demand only", REFRESH_MINUTES)
+    # Fast loop for sports whose data source is free (prediction markets):
+    # F1 scans every F1_REFRESH_SECONDS, independent of the paid providers'
+    # cadence. Partial scans merge into the snapshot without touching the
+    # main scan's status.
+    if F1_REFRESH_SECONDS > 0:
+        scheduler.add_job(
+            monitor.scan_once,
+            trigger=IntervalTrigger(seconds=F1_REFRESH_SECONDS),
+            id="f1-scan",
+            next_run_time=datetime.now(timezone.utc),
+            kwargs={"sports": ("f1",), "update_state": False},
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info("F1 fast loop started - scan every %d seconds", F1_REFRESH_SECONDS)
     try:
         yield
     finally:

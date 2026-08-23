@@ -306,37 +306,49 @@ class TennisMonitor:
             logger.exception("rotation telegram notify failed")
         logger.info("OddsPapi key rotated automatically")
 
-    async def scan_once(self, force: bool = False, dry_run_notify: bool = False) -> dict:
+    async def scan_once(self, force: bool = False, dry_run_notify: bool = False,
+                        sports: tuple[str, ...] | None = None,
+                        update_state: bool = True) -> dict:
+        """One scan. `sports` restricts the scan plan (used by the fast F1
+        loop); partial scans merge into the snapshot and don't clobber the
+        main scan's status/stats so the dashboard keeps showing the full
+        picture."""
         async with self._lock:
             started = _now()
             if not self.tracking_enabled and not force:
-                self.last_scan_at = started
-                self.last_scan_stats = {"skipped": True, "tracking_enabled": False}
-                return self.last_scan_stats
+                if update_state:
+                    self.last_scan_at = started
+                    self.last_scan_stats = {"skipped": True, "tracking_enabled": False}
+                return {"skipped": True, "tracking_enabled": False}
             try:
-                if not dry_run_notify:
+                if not dry_run_notify and sports is None:
                     # Best-effort key rotation before scanning, so a quota
                     # death costs at most one scan cycle of coverage.
                     await self._maybe_rotate_oddspapi_key()
-                result = await self._scan_impl(dry_run_notify=dry_run_notify)
-                self.last_scan_at = started
-                self.last_scan_error = None
-                self.last_scan_stats = result
+                result = await self._scan_impl(dry_run_notify=dry_run_notify,
+                                               sports=sports)
+                if update_state:
+                    self.last_scan_at = started
+                    self.last_scan_error = None
+                    self.last_scan_stats = result
                 await self.db.scans.insert_one({
                     "_id": str(uuid.uuid4()),
                     "started_at": started.isoformat(),
                     "stats": result,
+                    "partial": sports is not None,
                     "error": None,
                 })
                 return result
             except Exception as e:
                 logger.exception("scan failed")
-                self.last_scan_at = started
-                self.last_scan_error = str(e)
+                if update_state:
+                    self.last_scan_at = started
+                    self.last_scan_error = str(e)
                 await self.db.scans.insert_one({
                     "_id": str(uuid.uuid4()),
                     "started_at": started.isoformat(),
                     "stats": {},
+                    "partial": sports is not None,
                     "error": str(e),
                 })
                 return {"error": str(e)}
@@ -358,7 +370,8 @@ class TennisMonitor:
             plan.append(("f1", "prediction", None))
         return plan
 
-    async def _scan_impl(self, dry_run_notify: bool) -> dict:
+    async def _scan_impl(self, dry_run_notify: bool,
+                         sports: tuple[str, ...] | None = None) -> dict:
         now_dt = _now()
         now_ts = int(now_dt.timestamp())
         window_start = now_ts + MIN_LEAD_SECONDS  # skip matches about to start
@@ -367,6 +380,8 @@ class TennisMonitor:
         matches: list[dict] = []
         sport_errors: dict[str, str] = {}
         for sport, prov, whitelist in self._scan_plan():
+            if sports is not None and sport not in sports:
+                continue
             client = self.clients[prov]
             # F1 races are weekly events: track the whole race weekend ahead
             # instead of the 60-minute match window.
@@ -573,6 +588,14 @@ class TennisMonitor:
             await self.db.line_state.delete_many({"updated_at": {"$lt": cutoff}})
         except Exception:
             logger.debug("line_state prune skipped")
+
+        if sports is not None:
+            # Partial scan (e.g. the fast F1 loop): keep the other sports'
+            # matches in the shared snapshot instead of wiping them.
+            existing = await self.db.snapshots.find_one({"_id": "latest"}) or {}
+            kept = [m for m in existing.get("matches") or []
+                    if m.get("sport") not in sports]
+            matches_payload = kept + matches_payload
 
         await self.db.snapshots.update_one(
             {"_id": "latest"},
