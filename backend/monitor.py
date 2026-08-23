@@ -89,7 +89,13 @@ SPORT_META = {
     "football": {"label": "Calcio", "emoji": "⚽"},
     "hockey": {"label": "Hockey", "emoji": "🏒"},
     "f1": {"label": "Formula 1", "emoji": "🏎️"},
+    "mlb": {"label": "MLB", "emoji": "⚾"},
+    "ufc": {"label": "UFC", "emoji": "🥊"},
 }
+
+# Sports sourced from keyless prediction markets: tracked on the fast loop
+# and with a multi-day window (game cards / race weekends, not 60-min slots).
+PREDICTION_SPORTS = ("f1", "mlb", "ufc")
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
 
@@ -133,6 +139,8 @@ class TennisMonitor:
         self.football_enabled = True
         self.hockey_enabled = True
         self.f1_enabled = True
+        self.mlb_enabled = True
+        self.ufc_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -171,6 +179,10 @@ class TennisMonitor:
                 self.hockey_enabled = bool(cfg["hockey_enabled"])
             if "f1_enabled" in cfg:
                 self.f1_enabled = bool(cfg["f1_enabled"])
+            if "mlb_enabled" in cfg:
+                self.mlb_enabled = bool(cfg["mlb_enabled"])
+            if "ufc_enabled" in cfg:
+                self.ufc_enabled = bool(cfg["ufc_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -197,6 +209,8 @@ class TennisMonitor:
                             football_enabled: bool | None = None,
                             hockey_enabled: bool | None = None,
                             f1_enabled: bool | None = None,
+                            mlb_enabled: bool | None = None,
+                            ufc_enabled: bool | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -224,6 +238,12 @@ class TennisMonitor:
         if f1_enabled is not None:
             self.f1_enabled = bool(f1_enabled)
             update["f1_enabled"] = self.f1_enabled
+        if mlb_enabled is not None:
+            self.mlb_enabled = bool(mlb_enabled)
+            update["mlb_enabled"] = self.mlb_enabled
+        if ufc_enabled is not None:
+            self.ufc_enabled = bool(ufc_enabled)
+            update["ufc_enabled"] = self.ufc_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -368,6 +388,10 @@ class TennisMonitor:
             plan.append(("hockey", "oddspapi", HOCKEY_WHITELIST))
         if self.f1_enabled:
             plan.append(("f1", "prediction", None))
+        if self.mlb_enabled:
+            plan.append(("mlb", "prediction", None))
+        if self.ufc_enabled:
+            plan.append(("ufc", "prediction", None))
         return plan
 
     async def _scan_impl(self, dry_run_notify: bool,
@@ -383,9 +407,9 @@ class TennisMonitor:
             if sports is not None and sport not in sports:
                 continue
             client = self.clients[prov]
-            # F1 races are weekly events: track the whole race weekend ahead
-            # instead of the 60-minute match window.
-            if sport == "f1":
+            # Prediction-market sports: weekly/daily event cards, not
+            # 60-minute match slots - track several days ahead.
+            if sport in PREDICTION_SPORTS:
                 sport_ws, sport_we = now_ts + 60, now_ts + 4 * 86400
             else:
                 sport_ws, sport_we = window_start, end_ts
@@ -606,6 +630,8 @@ class TennisMonitor:
                 "football_enabled": self.football_enabled,
                 "football_provider": self.football_provider,
                 "f1_enabled": self.f1_enabled,
+                "mlb_enabled": self.mlb_enabled,
+                "ufc_enabled": self.ufc_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,

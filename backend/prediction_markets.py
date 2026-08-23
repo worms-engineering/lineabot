@@ -253,10 +253,19 @@ async def kalshi_f1_price(driver: str, start_epoch: int) -> float | None:
     return None
 
 
+# Sports tracked as pairwise "A vs. B" events on Polymarket (like WNBA
+# basketball): tag slugs + display label.
+VERSUS_SPORTS = {
+    "mlb": (["mlb"], "MLB"),
+    "ufc": (["ufc"], "UFC"),
+}
+
+
 class PredictionMarketsClient:
-    """Monitor-compatible client that tracks F1 on Polymarket (primary) and
-    cross-checks on Kalshi. Probabilities convert to decimal odds so drops/
-    steam behave like every other sport. Keyless and quota-free."""
+    """Monitor-compatible client that tracks F1, MLB and UFC on Polymarket
+    (primary) and cross-checks on Kalshi. Probabilities convert to decimal
+    odds so drops/steam behave like every other sport. Keyless and
+    quota-free."""
     name = "prediction"
 
     def __init__(self):
@@ -271,6 +280,8 @@ class PredictionMarketsClient:
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int,
                                    end_epoch: int, tournament_filter=None):
+        if sport in VERSUS_SPORTS:
+            return await self._get_versus_matches(sport, start_epoch, end_epoch)
         if sport != "f1":
             return []
         try:
@@ -352,4 +363,69 @@ class PredictionMarketsClient:
                     "start_epoch": start_ts,
                     "selections": selections,
                 })
+        return out
+
+    async def _get_versus_matches(self, sport: str, start_epoch: int,
+                                  end_epoch: int) -> list[dict]:
+        """Pairwise 'A vs. B' events (MLB games, UFC fights) as matches with
+        a two-way h2h market each. Same normalization/matching rules as the
+        alert-time lookups."""
+        tags, label = VERSUS_SPORTS[sport]
+        out: list[dict] = []
+        for tag in tags:
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    r = await client.get(_GAMMA_EVENTS, params={
+                        "limit": 500, "active": "true", "closed": "false",
+                        "tag_slug": tag})
+                    events = r.json() if r.status_code == 200 else []
+            except Exception:
+                continue
+            for e in events if isinstance(events, list) else []:
+                # Title is a prefilter only - event titles carry prefixes
+                # ("Dana White's Contender Series: A vs B (Weight)") so the
+                # fighter/team names come from the market outcomes instead.
+                if not re.search(r"\s+vs\.?\s+", str(e.get("title") or ""), re.I):
+                    continue
+                for m in e.get("markets") or []:
+                    game_ts = (_parse_ts(m.get("gameStartTime"))
+                               or _parse_ts(e.get("endDate")))
+                    if game_ts is None or not (start_epoch < game_ts <= end_epoch):
+                        continue
+                    try:
+                        outcomes = m.get("outcomes")
+                        prices = m.get("outcomePrices")
+                        if isinstance(outcomes, str):
+                            outcomes = json.loads(outcomes)
+                        if isinstance(prices, str):
+                            prices = json.loads(prices)
+                    except Exception:
+                        continue
+                    if (not outcomes or not prices
+                            or len(outcomes) != 2 or len(prices) != 2
+                            or outcomes[0].lower() in ("yes", "no")
+                            or outcomes[1].lower() in ("yes", "no")):
+                        continue
+                    selections = []
+                    ok = True
+                    for i, (name, p) in enumerate(zip(outcomes, prices)):
+                        price = _to_decimal(p)
+                        if not price or not (0.02 <= float(p) <= 0.97):
+                            ok = False
+                            break
+                        selections.append({
+                            "market_key": "h2h", "market_name": "Moneyline",
+                            "outcome": "home" if i == 0 else "away",
+                            "point": None,
+                            "label": name, "price": price})
+                    if not ok or len(selections) != 2:
+                        continue
+                    out.append({
+                        "match_id": f"pm-{e.get('id')}-{m.get('id')}",
+                        "tournament": label,
+                        "player1": outcomes[0], "player2": outcomes[1],
+                        "start_epoch": game_ts,
+                        "selections": selections,
+                    })
+                    break  # first usable market per event
         return out

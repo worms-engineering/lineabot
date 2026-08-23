@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", f1: "🏎️" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", f1: "🏎️", mlb: "⚾", ufc: "🥊" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -289,6 +289,17 @@ export default function Dashboard() {
     }
   };
 
+  const pmToggles = [["mlb", !!status?.mlb_enabled, "⚾"], ["ufc", !!status?.ufc_enabled, "🥊"]];
+  const togglePmSport = async (key, enabled) => {
+    try {
+      await axios.put(`${API}/settings`, { [`${key}_enabled`]: !enabled });
+      toast[!enabled ? "success" : "info"](`${key.toUpperCase()} ${!enabled ? "attivato" : "disattivato"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const footballProvider = status?.football_provider;
   const setFootballProvider = async (p) => {
     if (!p || p === footballProvider) return;
@@ -429,6 +440,22 @@ export default function Dashboard() {
           >
             🏎 {f1 ? "ON" : "OFF"}
           </button>
+
+          {pmToggles.map(([key, enabled, emoji]) => (
+            <button
+              key={key}
+              data-testid={`${key}-toggle`}
+              onClick={() => togglePmSport(key, enabled)}
+              title={`Traccia ${key.toUpperCase()} su Polymarket (mercati predittivi, gratis)`}
+              className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+                enabled
+                  ? "border-[#FF2D55]/40 bg-[#FF2D55]/10 text-[#FF2D55] hover:bg-[#FF2D55]/20"
+                  : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+              }`}
+            >
+              {emoji} {enabled ? "ON" : "OFF"}
+            </button>
+          ))}
 
           {football && (
             <div className="flex border border-white/15" data-testid="football-provider-switch" title="Provider quote per il calcio">
