@@ -16,7 +16,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from monitor import TennisMonitor
+from monitor import PREDICTION_SPORTS, TennisMonitor
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
             trigger=IntervalTrigger(seconds=F1_REFRESH_SECONDS),
             id="pm-scan",
             next_run_time=datetime.now(timezone.utc),
-            kwargs={"sports": monitor.PREDICTION_SPORTS, "update_state": False},
+            kwargs={"sports": PREDICTION_SPORTS, "update_state": False},
             max_instances=1,
             coalesce=True,
         )
