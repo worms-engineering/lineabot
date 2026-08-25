@@ -131,6 +131,9 @@ class SettingsOut(BaseModel):
     # Masked hint of the active OddsPapi key (last 4 chars) so the dashboard can
     # confirm which key is live without ever exposing the full value.
     oddspapi_key_hint: str | None
+
+
+class StatusOut(BaseModel):
     last_scan_at: str | None
     last_scan_error: str | None
     last_scan_stats: dict[str, Any]
