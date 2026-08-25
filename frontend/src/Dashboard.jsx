@@ -669,6 +669,16 @@ export default function Dashboard() {
                 <span className="text-zinc-300">
                   {underway && <span title="Match già iniziato" className="mr-1 text-zinc-500">▶</span>}
                   {SPORT_EMOJI[a.sport] ? `${SPORT_EMOJI[a.sport]} ` : ""}
+                  <span
+                    className={`mr-1 px-1 py-0.5 text-[8px] uppercase tracking-widest border align-middle ${
+                      a.provider === "prediction"
+                        ? "text-[#BF5AF2] border-[#BF5AF2]/40"
+                        : "text-[#007AFF] border-[#007AFF]/40"
+                    }`}
+                    title={a.provider === "prediction" ? "Fonte quote: Polymarket (prediction market)" : "Fonte quote: Pinnacle (sharp book)"}
+                  >
+                    {a.provider === "prediction" ? "Polymarket" : "Pinnacle"}
+                  </span>
                   <span className="text-white">{a.player1} vs {a.player2}</span>
                   <span className="text-zinc-600"> · {a.market_name} — </span>
                   <span className="text-white">{a.label}</span>

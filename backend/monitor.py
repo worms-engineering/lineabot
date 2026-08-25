@@ -838,20 +838,32 @@ class TennisMonitor:
             (("Polymarket", polymarket), ("Kalshi", kalshi)) if p)
         if pred:
             extra += f"\n🎯 {pred}"
+        sport = match.get("sport")
+        # F1 and MLB are sourced from the keyless prediction markets (Polymarket),
+        # NOT from Pinnacle - so they must never be labelled "PINNACLE DROP".
+        # Name the source in the header so a prediction-market steam move can't be
+        # mistaken for a sharp-book (Pinnacle) drop.
+        is_prediction = sport in PREDICTION_SPORTS
         p1, p2 = match.get("player1"), match.get("player2")
-        if p2 and match.get("sport") == "f1" and match.get("player2") in ("Race Winner", "Podium"):
+        if p2 and sport == "f1" and match.get("player2") in ("Race Winner", "Podium"):
             pairing = f"{esc(str(p1))} · {esc(str(p2))}"
         elif p2:
             pairing = f"{esc(str(p1))} vs {esc(str(p2))}"
         else:
             pairing = esc(str(p1))
-        header = ("📉 STEAM — " if match.get("sport") == "f1"
-                  else "⬇️ PINNACLE DROP — ") + esc(sport_tag)
+        if is_prediction:
+            header = "📉 STEAM Polymarket — " + esc(sport_tag)
+            move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
+                         f"(<b>-{drop_last * 100:.1f}%</b>) · quote Polymarket")
+        else:
+            header = "⬇️ PINNACLE DROP — " + esc(sport_tag)
+            move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
+                         f"(<b>-{drop_last * 100:.1f}%</b>)")
         return (
             f"<b>{header}</b>\n"
             f"{pairing}\n"
             f"{esc(match.get('tournament') or '')} · start {start_str}\n"
             f"{esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>\n"
-            f"{prev_price:.2f} → <b>{curr:.2f}</b> (<b>-{drop_last * 100:.1f}%</b>)\n"
+            f"{move_line}\n"
             f"da apertura: -{drop_from_open * 100:.1f}%{extra}"
         )
