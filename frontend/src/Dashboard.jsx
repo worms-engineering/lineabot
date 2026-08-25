@@ -833,6 +833,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const [footballDrop, setFootballDrop] = useState(5);
   const [token, setToken] = useState("");
   const [chatId, setChatId] = useState("");
+  const [oddspapiKey, setOddspapiKey] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -848,9 +849,10 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
       const body = { drop_threshold: drop / 100, football_drop_threshold: footballDrop / 100 };
       if (token) body.telegram_token = token;
       if (chatId) body.telegram_chat_id = chatId;
+      if (oddspapiKey.trim()) body.oddspapi_api_key = oddspapiKey.trim();
       await axios.put(`${API}/settings`, body);
       toast.success("Impostazioni salvate");
-      setToken(""); setChatId("");
+      setToken(""); setChatId(""); setOddspapiKey("");
       await onSaved();
       setOpen(false);
     } catch (e) {
@@ -923,6 +925,21 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
             </div>
             {customSound && (
               <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Suono personalizzato attivo</div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-widest text-zinc-400">OddsPapi key</div>
+            <div className="text-[10px] text-zinc-600">Cambia la key OddsPapi senza toccare Google Cloud. Si applica subito e resta salvata. Lascia vuoto per non cambiare.</div>
+            <Input
+              data-testid="settings-oddspapi-key"
+              value={oddspapiKey}
+              onChange={e => setOddspapiKey(e.target.value)}
+              placeholder="es. 1a2df34f-ba19-426b-b5e2-..."
+              className="rounded-none bg-[#0A0A0A] border-white/20 font-mono"
+            />
+            {settings?.oddspapi_key_hint && (
+              <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Key attiva: {settings.oddspapi_key_hint}</div>
             )}
           </div>
 

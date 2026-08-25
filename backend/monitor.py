@@ -233,13 +233,13 @@ class TennisMonitor:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
                 self.football_provider = cfg["football_provider"]
-            # OddsPapi key: the env var (ODDSPAPI_KEY) takes precedence over
-            # any key stored here, so rotating = updating it on the host and
-            # redeploying - no Mongo access needed. The DB copy only applies
-            # when no env var is set.
+            # OddsPapi key: a key stored here (set from the dashboard, or written
+            # by auto-rotation) takes precedence and wins. The ODDSPAPI_KEY env
+            # var, applied in the client's __init__, is only the initial seed used
+            # until a key is saved to the DB - so you can rotate the key from the
+            # dashboard (mobile included) without touching the host or redeploying.
             oddspapi_key = cfg.get("oddspapi_api_key")
-            env_key = os.environ.get("ODDSPAPI_KEY")
-            if oddspapi_key and not env_key:
+            if oddspapi_key:
                 self.clients["oddspapi"].api_key = oddspapi_key
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
@@ -839,8 +839,9 @@ class TennisMonitor:
         self._quota_alerted.add(provider)
         label = PROVIDER_LABELS.get(provider, provider)
         hint = (
-            "\n💡 Genera una nuova key e aggiorna ODDSPAPI_KEY (Variables) "
-            "su Railway, poi redeploy." if provider == "oddspapi" else ""
+            "\n💡 Genera una nuova key e impostala dalla dashboard "
+            "(Settings → OddsPapi key): si applica subito, senza redeploy."
+            if provider == "oddspapi" else ""
         )
         text = (
             f"<b>⚠️ Quota API esaurita — {label}</b>\n"
