@@ -340,20 +340,20 @@ export default function Dashboard() {
   const threshold = (settings?.drop_threshold ?? 0.05) * 100;
 
   return (
-    <div className="h-screen w-full flex flex-col bg-[#0A0A0A] text-white overflow-hidden" data-testid="dashboard-root">
+    <div className="min-h-screen lg:h-screen w-full flex flex-col bg-[#0A0A0A] text-white lg:overflow-hidden" data-testid="dashboard-root">
       <Toaster theme="dark" position="top-right" />
 
       {/* TOP BAR */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-white/10 bg-[#121212] shrink-0" data-testid="top-bar">
-        <div className="flex items-center gap-4">
+      <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between px-3 md:px-6 py-3 border-b border-white/10 bg-[#121212] shrink-0" data-testid="top-bar">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${tracking ? "bg-[#32D74B] pulse-dot" : "bg-zinc-600"}`} />
-            <span className="font-display uppercase tracking-tight text-xl font-bold">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
+            <span className="font-display uppercase tracking-tight text-lg md:text-xl font-bold">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
           </div>
-          <span className="text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket, Calcio &amp; Hockey · H2H &amp; Totals</span>
+          <span className="hidden sm:inline text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket, Calcio &amp; Hockey · H2H &amp; Totals</span>
         </div>
 
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <StatusPill label="Last scan" value={status?.last_scan_at ? new Date(status.last_scan_at).toLocaleTimeString() : "—"} icon={<Clock size={14} />} />
           <StatusPill label="Next scan" value={fmtCountdown(nextScanSec)} icon={<Radio size={14} className="text-[#007AFF]" />} mono />
           <StatusPill label="Drop ≥" value={`${threshold.toFixed(1)}%`} icon={<TrendingDown size={14} />} mono />
@@ -525,9 +525,9 @@ export default function Dashboard() {
       )}
 
       {/* MAIN */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col lg:flex-row flex-1 lg:overflow-hidden">
         {/* SIDEBAR */}
-        <aside className="w-80 border-r border-white/10 bg-[#0A0A0A] p-6 flex flex-col gap-8 overflow-y-auto shrink-0" data-testid="sidebar">
+        <aside className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-white/10 bg-[#0A0A0A] p-4 md:p-6 flex flex-col gap-8 lg:overflow-y-auto shrink-0" data-testid="sidebar">
           <SectionTitle icon={<Activity size={12} />}>Session</SectionTitle>
           <div className="grid grid-cols-2 gap-1 -mt-6">
             <StatBox label="Matches" value={totalFixtures} testId="stat-matches" />
@@ -577,9 +577,52 @@ export default function Dashboard() {
         </aside>
 
         {/* CONTENT */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <section className="flex-1 overflow-auto border-b border-white/10" data-testid="lines-table-section">
-            <table className="w-full text-sm text-left font-mono whitespace-nowrap">
+        <main className="flex-1 flex flex-col lg:overflow-hidden">
+          <section className="flex-1 overflow-x-auto lg:overflow-auto border-b border-white/10" data-testid="lines-table-section">
+            {/* Mobile: card list (the wide table is unreadable on a phone) */}
+            <div className="md:hidden" data-testid="lines-cards">
+              {rows.length === 0 ? (
+                <div className="p-8 text-center text-zinc-500 text-sm">
+                  <div className="font-display uppercase tracking-wider text-xl mb-2 text-zinc-700">
+                    {tracking ? "Nessun calo rilevante" : "Tracciamento disattivato"}
+                  </div>
+                  <div>
+                    {tracking
+                      ? <>Prossimo controllo tra <span className="text-white">{fmtCountdown(nextScanSec)}</span>.</>
+                      : "Attiva il tracciamento dal pulsante in alto."}
+                  </div>
+                </div>
+              ) : (
+                rows.map((r, i) => (
+                  <div key={i} className={`border-b border-white/5 p-3 ${r.is_drop ? "bg-[#32D74B]/5" : ""}`} data-testid={`line-card-${i}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-white text-sm truncate">
+                          {r.match.player2 ? <>{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</> : r.match.player1}
+                        </div>
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-widest truncate">{r.match.sport_emoji} {r.match.tournament}</div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <DropBadge drop={r.drop_from_open} isDrop={r.is_drop} />
+                        {r.suspect_live && (
+                          <div className="text-[9px] uppercase tracking-widest text-[#FF3B30]" title="Possibile match in corso: alert sospesi">live?</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-xs font-mono">
+                      <span className="text-zinc-300"><span className="text-zinc-500 uppercase tracking-widest text-[10px]">{r.market_name} · </span>{r.label}</span>
+                      <span className="text-zinc-500">{fmtTime(r.match.start_time)} · in {minsUntil(r.match.start_time)}m</span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-4 text-xs font-mono">
+                      <span className="text-zinc-500">Open <span className="text-zinc-300">{r.open_price?.toFixed(2)}</span></span>
+                      <span className="text-zinc-500">Pinnacle <span className="text-white font-semibold">{r.price?.toFixed(2)}</span></span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            {/* Desktop: full table */}
+            <table className="hidden md:table w-full text-sm text-left font-mono whitespace-nowrap">
               <thead className="sticky top-0 z-10 bg-[#121212] border-b border-white/20 text-zinc-500 text-[10px] uppercase tracking-widest">
                 <tr>
                   <Th>Start</Th>
@@ -663,10 +706,10 @@ export default function Dashboard() {
             {alerts.filter(a => !(hideStarted && isUnderway(a, now))).map((a, i) => {
               const underway = isUnderway(a, now);
               return (
-              <div key={`${i}-${a.created_at}-${a.label}`} className={`py-1 border-b border-white/5 flex items-start gap-3 ${underway ? "opacity-50" : ""}`} data-testid="alert-row">
-                <span className="text-zinc-600">{new Date(a.created_at).toLocaleTimeString()}</span>
+              <div key={`${i}-${a.created_at}-${a.label}`} className={`py-1 border-b border-white/5 flex items-start gap-2 md:gap-3 ${underway ? "opacity-50" : ""}`} data-testid="alert-row">
+                <span className="text-zinc-600 shrink-0 whitespace-nowrap">{new Date(a.created_at).toLocaleTimeString()}</span>
                 {a.telegram_ok ? <CheckCircle2 size={12} className="text-[#32D74B] shrink-0 mt-0.5" /> : <XCircle size={12} className="text-[#FF3B30] shrink-0 mt-0.5" />}
-                <span className="text-zinc-300">
+                <span className="text-zinc-300 min-w-0 break-words">
                   {underway && <span title="Match già iniziato" className="mr-1 text-zinc-500">▶</span>}
                   {SPORT_EMOJI[a.sport] ? `${SPORT_EMOJI[a.sport]} ` : ""}
                   <span
@@ -810,7 +853,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
           <Settings size={14} className="mr-2" /> Settings
         </Button>
       </DialogTrigger>
-      <DialogContent className="bg-[#0A0A0A] border-white/10 rounded-none max-w-lg" data-testid="settings-dialog">
+      <DialogContent className="bg-[#0A0A0A] border-white/10 rounded-none max-w-lg w-[calc(100%-1.5rem)] max-h-[90dvh] overflow-y-auto" data-testid="settings-dialog">
         <DialogHeader>
           <DialogTitle className="font-display uppercase text-2xl tracking-tight">Monitor Settings</DialogTitle>
         </DialogHeader>
