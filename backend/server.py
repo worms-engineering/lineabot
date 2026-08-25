@@ -103,6 +103,7 @@ class SettingsIn(BaseModel):
     basketball_enabled: bool | None = None
     football_enabled: bool | None = None
     hockey_enabled: bool | None = None
+    volley_enabled: bool | None = None
     f1_enabled: bool | None = None
     mlb_enabled: bool | None = None
     provider: str | None = None
@@ -118,6 +119,7 @@ class SettingsOut(BaseModel):
     basketball_enabled: bool
     football_enabled: bool
     hockey_enabled: bool
+    volley_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
     provider: str
@@ -139,6 +141,7 @@ class StatusOut(BaseModel):
     basketball_enabled: bool
     football_enabled: bool
     hockey_enabled: bool
+    volley_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
     provider: str
@@ -170,6 +173,8 @@ def _quota_warning() -> str | None:
         in_use.add(monitor.football_provider)
     if monitor.hockey_enabled:
         in_use.add("oddspapi")  # hockey always runs on OddsPapi
+    if monitor.volley_enabled:
+        in_use.add("oddspapi")  # volleyball always runs on OddsPapi
     msgs = []
     for key in sorted(in_use):
         client = monitor.clients.get(key)
@@ -210,6 +215,7 @@ async def get_status():
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
         hockey_enabled=monitor.hockey_enabled,
+        volley_enabled=monitor.volley_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
         provider=monitor.provider,
@@ -265,6 +271,7 @@ def _settings_out() -> SettingsOut:
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
         hockey_enabled=monitor.hockey_enabled,
+        volley_enabled=monitor.volley_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
         provider=monitor.provider,
@@ -295,6 +302,7 @@ async def update_settings(body: SettingsIn):
         basketball_enabled=body.basketball_enabled,
         football_enabled=body.football_enabled,
         hockey_enabled=body.hockey_enabled,
+        volley_enabled=body.volley_enabled,
         f1_enabled=body.f1_enabled,
         mlb_enabled=body.mlb_enabled,
         provider=body.provider,

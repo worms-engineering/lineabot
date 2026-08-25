@@ -25,7 +25,11 @@ import mock_data
 BASE_URL = "https://api.oddspapi.io/v4"
 TENNIS_SPORT_ID = 12
 # Canonical sport key -> OddsPapi sportId.
-SPORT_IDS = {"tennis": 12, "basketball": 11, "football": 10, "hockey": 15}
+SPORT_IDS = {"tennis": 12, "basketball": 11, "football": 10, "hockey": 15, "volley": 23}
+# Sports tracked H2H-only: their totals are set-based (volleyball ~3.5-5.5) and,
+# unlike other sports, Pinnacle doesn't flag a main total line on them, so the
+# main-total isolation below can't reliably pick one - skip totals entirely.
+H2H_ONLY_SPORTS = {"volley"}
 TOURNAMENT_CHUNK_SIZE = 5
 _BOOKMAKER_CHUNK_LIMITS = {"betfair-ex": 3}
 _MIN_REQUEST_INTERVAL = 1.05
@@ -364,7 +368,7 @@ class OddsPapiClient:
                     selections.append({"market_key": "h2h", "market_name": H2H_MARKET_NAME,
                                        "outcome": "draw", "point": None, "label": "Pareggio",
                                        "price": h2h["draw"]})
-            total = _pinnacle_main_total(book, sport)
+            total = None if sport in H2H_ONLY_SPORTS else _pinnacle_main_total(book, sport)
             if total:
                 selections.append({"market_key": "totals", "market_name": TOTALS_MARKET_NAME,
                                    "outcome": "Over", "point": total["line"],

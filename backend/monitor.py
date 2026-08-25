@@ -62,6 +62,34 @@ BASKETBALL_WHITELIST = ["nba", "wnba", "eurobasket"]
 # like football if the off-season friendlies get noisy.
 HOCKEY_WHITELIST = None
 
+# Volleyball runs on OddsPapi, H2H-only (see H2H_ONLY_SPORTS in
+# oddspapi_client.py). The worldwide calendar is huge (289 tournaments) and
+# mostly leagues no Italian book prices, so - like football - restrict to the
+# competitions Italian soft books actually cover: the domestic top flights +
+# cup, the CEV club cups, and the senior national-team events (men & women).
+# Names verified live against GET /v4/tournaments?sportId=23. Exact 2-tuple
+# matches (optionally category-scoped) to avoid pulling age-group / continental
+# / qualification variants that share a word.
+VOLLEY_WHITELIST_ODDSPAPI = [
+    ("italy", "superlega"),
+    ("italy", "coppa italia superlega"),
+    ("italy", "serie a1 women"),
+    ("international", "champions league"),          # men CEV Champions League
+    ("international", "cev champions league, women"),
+    ("international", "cev cup"),
+    ("international", "cev cup, women"),
+    ("international", "fivb world championship"),
+    ("international", "fivb world championship women"),
+    ("international", "nations league"),            # VNL men
+    ("international", "nations league, women"),      # VNL women
+    ("international", "european championship"),      # EuroVolley men
+    ("international", "cev eurovolley, women"),       # EuroVolley women
+    ("international", "olympic tournament"),
+    ("international", "olympic tournament women"),
+    ("international", "world cup"),
+    ("international", "world cup women"),
+]
+
 # Football whitelist for OddsPapi (worldwide calendar, so plain substrings
 # would false-match: "bundesliga" also sits inside "2. Bundesliga", "laliga"
 # inside "LaLiga2", etc). Domestic top flights use EXACT tournament-name
@@ -97,6 +125,7 @@ SPORT_META = {
     "basketball": {"label": "Basket", "emoji": "🏀"},
     "football": {"label": "Calcio", "emoji": "⚽"},
     "hockey": {"label": "Hockey", "emoji": "🏒"},
+    "volley": {"label": "Volley", "emoji": "🏐"},
     "f1": {"label": "Formula 1", "emoji": "🏎️"},
     "mlb": {"label": "MLB", "emoji": "⚾"},
 }
@@ -154,6 +183,7 @@ class TennisMonitor:
         self.basketball_enabled = True
         self.football_enabled = True
         self.hockey_enabled = True
+        self.volley_enabled = True
         self.f1_enabled = True
         self.mlb_enabled = True
         self._lock = asyncio.Lock()
@@ -192,6 +222,8 @@ class TennisMonitor:
                 self.football_enabled = bool(cfg["football_enabled"])
             if "hockey_enabled" in cfg:
                 self.hockey_enabled = bool(cfg["hockey_enabled"])
+            if "volley_enabled" in cfg:
+                self.volley_enabled = bool(cfg["volley_enabled"])
             if "f1_enabled" in cfg:
                 self.f1_enabled = bool(cfg["f1_enabled"])
             if "mlb_enabled" in cfg:
@@ -239,6 +271,7 @@ class TennisMonitor:
                             basketball_enabled: bool | None = None,
                             football_enabled: bool | None = None,
                             hockey_enabled: bool | None = None,
+                            volley_enabled: bool | None = None,
                             f1_enabled: bool | None = None,
                             mlb_enabled: bool | None = None,
                             provider: str | None = None,
@@ -265,6 +298,9 @@ class TennisMonitor:
         if hockey_enabled is not None:
             self.hockey_enabled = bool(hockey_enabled)
             update["hockey_enabled"] = self.hockey_enabled
+        if volley_enabled is not None:
+            self.volley_enabled = bool(volley_enabled)
+            update["volley_enabled"] = self.volley_enabled
         if f1_enabled is not None:
             self.f1_enabled = bool(f1_enabled)
             update["f1_enabled"] = self.f1_enabled
@@ -415,6 +451,10 @@ class TennisMonitor:
             plan.append(("football", self.football_provider, whitelist))
         if self.hockey_enabled:
             plan.append(("hockey", "oddspapi", HOCKEY_WHITELIST))
+        if self.volley_enabled:
+            # Volleyball: OddsPapi, H2H-only, restricted to the Italy-relevant
+            # competitions (whitelist above).
+            plan.append(("volley", "oddspapi", VOLLEY_WHITELIST_ODDSPAPI))
         if self.f1_enabled:
             plan.append(("f1", "prediction", None))
         if self.mlb_enabled:
@@ -690,6 +730,7 @@ class TennisMonitor:
                 "f1_enabled": self.f1_enabled,
                 "mlb_enabled": self.mlb_enabled,
                 "hockey_enabled": self.hockey_enabled,
+                "volley_enabled": self.volley_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,
                 "tracking_enabled": self.tracking_enabled,

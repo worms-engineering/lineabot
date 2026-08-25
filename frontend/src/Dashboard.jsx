@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", f1: "🏎️", mlb: "⚾" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -278,6 +278,17 @@ export default function Dashboard() {
     }
   };
 
+  const volley = !!status?.volley_enabled;
+  const toggleVolley = async () => {
+    try {
+      await axios.put(`${API}/settings`, { volley_enabled: !volley });
+      toast[!volley ? "success" : "info"](`Volley ${!volley ? "attivato" : "disattivato"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const f1 = !!status?.f1_enabled;
   const toggleF1 = async () => {
     try {
@@ -350,7 +361,7 @@ export default function Dashboard() {
             <div className={`w-2 h-2 rounded-full ${tracking ? "bg-[#32D74B] pulse-dot" : "bg-zinc-600"}`} />
             <span className="font-display uppercase tracking-tight text-lg md:text-xl font-bold">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
           </div>
-          <span className="hidden sm:inline text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket, Calcio &amp; Hockey · H2H &amp; Totals</span>
+          <span className="hidden sm:inline text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket, Calcio, Hockey &amp; Volley · H2H &amp; Totals</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -426,6 +437,19 @@ export default function Dashboard() {
             }`}
           >
             🏒 {hockey ? "ON" : "OFF"}
+          </button>
+
+          <button
+            data-testid="volley-toggle"
+            onClick={toggleVolley}
+            title="Traccia il volley (SuperLega, Serie A1 femminile, coppe CEV e nazionali, via OddsPapi · solo H2H)"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              volley
+                ? "border-[#FFD60A]/40 bg-[#FFD60A]/10 text-[#FFD60A] hover:bg-[#FFD60A]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🏐 {volley ? "ON" : "OFF"}
           </button>
 
           <button
