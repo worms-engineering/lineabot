@@ -1,6 +1,8 @@
 # Docker image for the lineabot backend (FastAPI + APScheduler).
-# Portable across hosts: Railway injects PORT and health-checks it, while
-# Hugging Face Spaces expects 7860 - so listen on $PORT with a 7860 default.
+# Portable across hosts: Cloud Run / Railway inject PORT and health-check it,
+# while Hugging Face Spaces expects 7860 - so listen on $PORT with a 7860
+# default. On Cloud Run, run with --min-instances 1 and --no-cpu-throttling so
+# the in-process APScheduler keeps scanning while the instance is idle.
 FROM python:3.11-slim
 
 WORKDIR /app

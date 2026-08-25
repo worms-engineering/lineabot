@@ -43,12 +43,12 @@ stagione non contano), se su OddsPapi segue lo stesso schema del basket.
 Questo repository è la versione **standalone**, estratta da Emergent e pronta al deploy
 indipendente:
 
-- **Backend** → FastAPI + APScheduler + MongoDB, deploy su **Render**
+- **Backend** → FastAPI + APScheduler + MongoDB, deploy su **Google Cloud Run**
 - **Frontend** → React (Vite) + Tailwind + shadcn/ui, deploy su **Vercel**
 
 ```
 tennis-monitor/
-├── backend/          # FastAPI app (deploy su Render)
+├── backend/          # FastAPI app (deploy su Cloud Run)
 │   ├── server.py             # entrypoint FastAPI (uvicorn server:app)
 │   ├── monitor.py            # logica di scan / rilevamento cali di quota / alert
 │   ├── theoddsapi_client.py  # client The Odds API (+ modalità mock)
@@ -78,7 +78,7 @@ tennis-monitor/
 > ⚠️ **Sicurezza**: nel file originale erano presenti la key API e i token Telegram in
 > chiaro. Sono stati riportati in `backend/.env` solo per lo sviluppo locale. **Rigenera /
 > ruota queste credenziali** prima di andare in produzione e impostale come variabili
-> d'ambiente segrete su Render — non committarle mai su un repo pubblico.
+> d'ambiente segrete su Cloud Run (o Secret Manager) — non committarle mai su un repo pubblico.
 
 ---
 
@@ -108,51 +108,73 @@ UI su `http://localhost:3000`.
 
 ---
 
-## 3. Deploy del backend su Render
+## 3. Deploy del backend su Google Cloud Run
 
-Puoi usare il blueprint incluso (`render.yaml`) oppure configurare a mano.
+Il backend gira come container: l'immagine è costruita dal `Dockerfile` in root, che ascolta
+su `$PORT` (Cloud Run lo inietta a runtime). Puoi deployare direttamente da sorgente con un
+solo comando `gcloud`, che builda e pubblica in automatico.
 
-### Opzione A — Blueprint (consigliata)
-1. Fai push del repo su GitHub.
-2. Su Render: **New → Blueprint**, seleziona il repo. Render legge `render.yaml`.
-3. Imposta le variabili marcate `sync: false` come **secret** nella dashboard:
-   - `MONGO_URL` — la connection string di MongoDB Atlas
-   - `THE_ODDS_API_KEY` (la legacy `ODDSPAPI_KEY` è accettata come fallback)
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-   - `CORS_ORIGINS` — l'URL Vercel del frontend (es. `https://your-app.vercel.app`)
-4. Deploy.
+### Deploy
 
-### Opzione B — Manuale
-- **New → Web Service**, connetti il repo.
-- Root Directory: `backend`
-- Build Command: `pip install -r requirements.txt`
-- Start Command: `uvicorn server:app --host 0.0.0.0 --port $PORT`
-- Health Check Path: `/`
-- Aggiungi le stesse variabili d'ambiente elencate sopra + `DB_NAME=tennis_monitor`.
+```bash
+gcloud run deploy lineabot-backend \
+  --source . \
+  --region europe-west1 \
+  --allow-unauthenticated \
+  --min-instances 1 \
+  --no-cpu-throttling \
+  --set-env-vars "DB_NAME=tennis_monitor,REFRESH_MINUTES=10,USE_MOCK_DATA=false" \
+  --set-env-vars "MONGO_URL=...,THE_ODDS_API_KEY=...,ODDSPAPI_KEY=..." \
+  --set-env-vars "TELEGRAM_BOT_TOKEN=...,TELEGRAM_CHAT_ID=...,CORS_ORIGINS=https://your-app.vercel.app"
+```
 
-### ⚠️ Scheduler, toggle di tracciamento e consumo call
-Lo scheduler (APScheduler) gira **dentro il processo web** e scansiona ogni `REFRESH_MINUTES`
-(default 10). Ogni scansione è gated dal **toggle di tracciamento**:
+> Per i valori sensibili conviene usare **Secret Manager** (`--set-secrets` invece di
+> `--set-env-vars`), così le key non restano in chiaro nella config del servizio.
+
+Variabili d'ambiente (le stesse di `backend/.env.example`):
+- `MONGO_URL` — connection string MongoDB Atlas (`mongodb+srv://...`)
+- `DB_NAME` — es. `tennis_monitor`
+- `THE_ODDS_API_KEY` (la legacy `ODDSPAPI_KEY` è accettata come fallback)
+- `ODDSPAPI_KEY`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- `CORS_ORIGINS` — l'URL Vercel del frontend (es. `https://your-app.vercel.app`)
+- `REFRESH_MINUTES` — minuti tra gli scan automatici (default 10)
+
+### ⚠️ CPU sempre allocata e min-instances (fondamentale su Cloud Run)
+Lo scheduler (APScheduler) gira **dentro il processo web**, non come job separato. Cloud Run
+di default **alloca la CPU solo durante le richieste** e scala a **zero** quando non ne
+arrivano: in quel caso lo scheduler interno viene congelato e **gli scan si fermano** senza
+alcun errore. Perché il monitoraggio giri 24/7 servono entrambe le opzioni:
+
+- **`--min-instances 1`** — tiene almeno un'istanza sempre viva (niente scale-to-zero);
+- **`--no-cpu-throttling`** (CPU always allocated) — la CPU resta assegnata anche fuori
+  dalle richieste, così i timer di APScheduler scattano davvero.
+
+> Il ping periodico su `GET /` (stile cron-job.org) **non basta** su Cloud Run: sveglia
+> l'istanza a ogni ping, ma tra un ping e l'altro la CPU resta strozzata e lo scheduler non
+> avanza. Usalo al più come rete di sicurezza, non al posto di `--no-cpu-throttling`.
+
+### Scheduler, toggle di tracciamento e consumo call
+Ogni scansione è gated dal **toggle di tracciamento**:
 
 - **Tracking ON** → scansiona Pinnacle e rileva i cali di quota.
 - **Tracking OFF** → lo scan viene saltato, **zero crediti API** (utile es. di notte).
 
 Puoi accendere/spegnere dal pulsante in dashboard o con `POST /api/tracking {"enabled": true|false}`.
-`REFRESH_MINUTES = 0` disattiva del tutto lo scheduler (scan solo on-demand via `/api/refresh`).
+`REFRESH_MINUTES = 0` disattiva lo scheduler dello scan principale (resta on-demand via
+`/api/refresh`); il fast-loop dei prediction market (F1/MLB/UFC, keyless e gratuito) continua
+comunque a girare ogni `F1_REFRESH_SECONDS`.
 
 Il tracciamento richiede osservazioni ravvicinate (confronta la quota con quella dello scan
-precedente), quindi conviene tenerlo attivo di continuo:
+precedente), quindi conviene tenerlo attivo di continuo.
 
-- **Piano Starter** ($7/mese) — nel `render.yaml` è già `plan: starter`: il servizio non
-  dorme e lo scheduler gira 24/7.
-- **Piano Free** — il servizio va in sleep dopo ~15 min: per tenerlo sveglio usa un ping
-  periodico su `GET /` (health, **0 crediti API**) da un servizio esterno tipo
-  cron-job.org ogni ~5-10 min. Lo scanning lo fa lo scheduler interno; il ping serve solo a
-  non far addormentare il servizio.
+Dopo il deploy, copia l'URL pubblico del servizio (es.
+`https://lineabot-backend-xxxxxxxx-ew.a.run.app`): ti serve per il frontend.
 
-Dopo il deploy, copia l'URL pubblico del backend (es.
-`https://tennis-monitor-backend.onrender.com`): ti serve per il frontend.
+### Alternativa: Render
+Il repo include anche `render.yaml` (blueprint Render) e un `Procfile`: se preferisci Render,
+**New → Blueprint** sul repo e imposta gli stessi secret. Nota che sul piano Free il servizio
+dorme dopo ~15 min, quindi lì il ping esterno su `GET /` serve davvero a tenerlo sveglio.
 
 ---
 
@@ -162,10 +184,10 @@ Dopo il deploy, copia l'URL pubblico del backend (es.
 2. **Root Directory**: `frontend`
 3. Framework Preset: **Vite** (auto-rilevato). Build `npm run build`, output `dist`.
 4. **Environment Variables** → aggiungi:
-   - `VITE_BACKEND_URL` = l'URL del backend Render (senza slash finale)
+   - `VITE_BACKEND_URL` = l'URL del backend Cloud Run (senza slash finale)
 5. Deploy.
 
-Dopo il deploy, torna su Render e imposta `CORS_ORIGINS` con l'URL definitivo di Vercel
+Dopo il deploy, torna su Cloud Run e imposta `CORS_ORIGINS` con l'URL definitivo di Vercel
 (es. `https://tennis-monitor.vercel.app`), così il browser non blocca le chiamate.
 Se hai anche un dominio custom, puoi mettere più origin separati da virgola.
 
@@ -175,7 +197,7 @@ Se hai anche un dominio custom, puoi mettere più origin separati da virgola.
 
 | Metodo | Path                 | Descrizione                                   |
 |--------|----------------------|-----------------------------------------------|
-| GET    | `/`                  | Health check (usato da Render)                |
+| GET    | `/`                  | Health check (usato da Cloud Run)             |
 | GET    | `/api/status`        | Stato scan, prossimo scan, soglia, tracking on/off |
 | GET    | `/api/snapshot`      | Ultimo snapshot: match e quote tracciate      |
 | GET    | `/api/alerts`        | Storico alert (cali di quota)                 |
@@ -189,11 +211,12 @@ Se hai anche un dominio custom, puoi mettere più origin separati da virgola.
 
 ## 6. Checklist finale
 
-- [ ] MongoDB Atlas creato e connection string in `MONGO_URL` su Render
-- [ ] Credenziali The Odds API e Telegram **rigenerate** e messe come secret su Render
-- [ ] Backend Render risponde su `/` e `/api/status`
+- [ ] MongoDB Atlas creato e connection string in `MONGO_URL` su Cloud Run
+- [ ] Credenziali The Odds API e Telegram **rigenerate** e messe come secret su Cloud Run (Secret Manager)
+- [ ] Backend Cloud Run risponde su `/` e `/api/status`
 - [ ] `VITE_BACKEND_URL` impostato su Vercel = URL del backend
-- [ ] `CORS_ORIGINS` su Render = URL del frontend Vercel
-- [ ] `REFRESH_MINUTES` impostato (es. 3-5) e, sul piano Free, cron esterno su `GET /` per
-      tenere sveglio il servizio (0 crediti API)
+- [ ] `CORS_ORIGINS` su Cloud Run = URL del frontend Vercel
+- [ ] Servizio Cloud Run con `--min-instances 1` **e** `--no-cpu-throttling`, così lo
+      scheduler interno gira 24/7 (senza, gli scan si fermano quando l'istanza è idle)
+- [ ] `REFRESH_MINUTES` impostato (es. 3-5)
 - [ ] Tracciamento acceso/spento dal pulsante in dashboard (spegnilo per non consumare call)

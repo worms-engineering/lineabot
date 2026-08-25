@@ -16,6 +16,7 @@ header. Key: THE_ODDS_API_KEY, falling back to ODDSPAPI_KEY.
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -24,6 +25,10 @@ import httpx
 import mock_data
 
 BASE_URL = "https://api.the-odds-api.com/v4"
+# /sports is free (0 credits) but every sport's get_events() re-fetches it, so
+# within one scan cycle (tennis + basketball + football, seconds apart) it's
+# hit 2-3x. Cache the active-key list briefly to collapse those into one call.
+_SPORTS_CACHE_TTL = 120.0
 # Canonical sport key -> The Odds API sport-key prefix (dynamic discovery).
 SPORT_PREFIXES = {"tennis": "tennis_", "basketball": "basketball_"}
 # Football: explicit whitelist instead of a prefix (top-5 European leagues +
@@ -112,6 +117,8 @@ class TheOddsApiClient:
         self.requests_remaining: int | None = None
         self.requests_used: int | None = None
         self.quota_exhausted = False
+        self._sports_cache: list[dict] | None = None
+        self._sports_cache_at = 0.0
 
     async def close(self):
         await self._client.aclose()
@@ -139,8 +146,14 @@ class TheOddsApiClient:
         return resp.json()
 
     async def get_sports(self) -> list[dict]:
+        now = time.monotonic()
+        if (self._sports_cache is not None
+                and now - self._sports_cache_at < _SPORTS_CACHE_TTL):
+            return self._sports_cache
         data = await self._get("/sports", {})
-        return data if isinstance(data, list) else []
+        self._sports_cache = data if isinstance(data, list) else []
+        self._sports_cache_at = now
+        return self._sports_cache
 
     async def get_events(self, prefix: str | None = None, sport_keys: list[str] | None = None,
                          regions=DEFAULT_REGIONS, markets=DEFAULT_MARKETS) -> list[dict]:

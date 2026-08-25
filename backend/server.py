@@ -44,6 +44,7 @@ scheduler = AsyncIOScheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await monitor.load_settings()
+    await monitor.ensure_indexes()
     # REFRESH_MINUTES <= 0 disables the automatic scheduler: scans then happen
     # only when triggered (e.g. the frontend polls /api/refresh while open), so
     # no OddsPapi calls are burned when nobody is watching.
@@ -56,8 +57,7 @@ async def lifespan(app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
-        scheduler.start()
-        logger.info("Scheduler started - scan every %d minutes", REFRESH_MINUTES)
+        logger.info("Scan scheduled - every %d minutes", REFRESH_MINUTES)
     else:
         logger.info("Automatic scheduler disabled (REFRESH_MINUTES=%s) - scans are on-demand only", REFRESH_MINUTES)
     # Fast loop for sports whose data source is free (prediction markets):
@@ -74,7 +74,13 @@ async def lifespan(app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
-        logger.info("Prediction-market fast loop started - every %d seconds", F1_REFRESH_SECONDS)
+        logger.info("Prediction-market fast loop scheduled - every %d seconds", F1_REFRESH_SECONDS)
+    # Start once, after both jobs are registered: the fast F1/MLB/UFC loop must
+    # still run when REFRESH_MINUTES=0 (on-demand main scan), which the old
+    # start-inside-the-REFRESH_MINUTES-branch placement silently skipped.
+    if scheduler.get_jobs():
+        scheduler.start()
+        logger.info("Scheduler started")
     try:
         yield
     finally:
@@ -323,10 +329,16 @@ async def toggle_mock(enabled: bool):
 
 app.include_router(api)
 
+# Strip whitespace so "https://a, https://b" (a common footgun) still works.
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    # Wildcard origins can't be combined with credentials (browsers reject
+    # `Access-Control-Allow-Origin: *` on credentialed requests, and Starlette
+    # then drops the header entirely). The API is token-free and the frontend
+    # sends no cookies, so only enable credentials when origins are explicit.
+    allow_credentials="*" not in _cors_origins,
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

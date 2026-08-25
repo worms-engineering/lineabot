@@ -19,6 +19,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from pymongo import UpdateOne
+
 from theoddsapi_client import TheOddsApiClient
 from oddspapi_client import OddsPapiClient
 from telegram_client import TelegramClient
@@ -35,6 +37,9 @@ MIN_LEAD_SECONDS = 90
 DEFAULT_DROP_THRESHOLD = 0.05
 MAX_BASELINE_AGE_SECONDS = 30 * 60
 LINE_STATE_TTL_SECONDS = 6 * 60 * 60
+# The scans collection is a write-only audit log; auto-expire it so the fast
+# prediction-market loop (a doc/minute) can't grow it without bound.
+SCANS_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Minimum time between auto key-rotation attempts, so a broken generator
 # (site down, signup captcha...) doesn't get hammered every scan.
@@ -102,6 +107,13 @@ PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _line_key(provider: str, sport: str, match_id: Any, sel: dict) -> str:
+    """Stable per-selection line_state document id. Kept in one place so the
+    batched pre-fetch and the per-selection update below can never drift."""
+    point_key = "" if sel.get("point") is None else sel["point"]
+    return f"{provider}:{sport}:{match_id}:{sel['market_key']}:{sel['outcome']}:{point_key}"
 
 
 def _parse_iso_epoch(value: Any) -> int | None:
@@ -201,6 +213,24 @@ class TennisMonitor:
                 self.telegram.token = token
             if chat_id:
                 self.telegram.chat_id = chat_id
+
+    async def ensure_indexes(self):
+        """Create the indexes the hot paths rely on. Best-effort and
+        idempotent (safe to call on every startup):
+        - alerts.created_at desc: /api/alerts sorts on it;
+        - line_state.updated_at: the end-of-scan stale-row prune range-deletes
+          on it;
+        - scans.created_at TTL: the scans audit log is write-only and, with the
+          fast prediction-market loop, grows by ~1 doc/minute - expire it so it
+          can't balloon unbounded.
+        """
+        try:
+            await self.db.alerts.create_index([("created_at", -1)])
+            await self.db.line_state.create_index("updated_at")
+            await self.db.scans.create_index(
+                "created_at", expireAfterSeconds=SCANS_TTL_SECONDS)
+        except Exception:
+            logger.exception("index creation failed (non-fatal)")
 
     async def save_settings(self, drop_threshold: float | None = None,
                             football_drop_threshold: float | None = None,
@@ -354,6 +384,7 @@ class TennisMonitor:
                 await self.db.scans.insert_one({
                     "_id": str(uuid.uuid4()),
                     "started_at": started.isoformat(),
+                    "created_at": started,  # BSON date, drives the TTL index
                     "stats": result,
                     "partial": sports is not None,
                     "error": None,
@@ -367,6 +398,7 @@ class TennisMonitor:
                 await self.db.scans.insert_one({
                     "_id": str(uuid.uuid4()),
                     "started_at": started.isoformat(),
+                    "created_at": started,  # BSON date, drives the TTL index
                     "stats": {},
                     "partial": sports is not None,
                     "error": str(e),
@@ -443,8 +475,15 @@ class TennisMonitor:
         drops_found = 0
         alerts_sent = 0
 
+        # Pre-pass: filter out started matches and pre-compute every
+        # line_state key, so the whole scan's previous state can be read in a
+        # single query instead of one find_one per selection (a busy tennis
+        # scan is easily 50+ fixtures x 4 selections = 200 sequential, latency-
+        # bound round-trips otherwise). Updates are likewise batched into one
+        # bulk_write at the end.
+        plan_items: list[dict] = []
+        all_keys: list[str] = []
         for match in matches:
-            match_id = match.get("match_id")
             start_epoch = match.get("start_epoch")
             if start_epoch is not None and start_epoch <= now_ts:
                 # Match already underway: the 90s fetch-time lead is not
@@ -457,11 +496,31 @@ class TennisMonitor:
             provider = match.get("provider", self.provider)
             sport = match.get("sport", "tennis")
             threshold = self.football_drop_threshold if sport == "football" else self.drop_threshold
-            line_rows: list[dict] = []
+            match_id = match.get("match_id")
+            sels: list[tuple[dict, str]] = []
             for sel in match.get("selections") or []:
-                point_key = "" if sel.get("point") is None else sel["point"]
-                key = f"{provider}:{sport}:{match_id}:{sel['market_key']}:{sel['outcome']}:{point_key}"
-                prev = await self.db.line_state.find_one({"_id": key})
+                key = _line_key(provider, sport, match_id, sel)
+                sels.append((sel, key))
+                all_keys.append(key)
+            plan_items.append({"match": match, "provider": provider, "sport": sport,
+                               "threshold": threshold, "match_id": match_id, "sels": sels})
+
+        prev_states: dict[str, dict] = {}
+        if all_keys:
+            async for doc in self.db.line_state.find({"_id": {"$in": all_keys}}):
+                prev_states[doc["_id"]] = doc
+        line_ops: list[UpdateOne] = []
+
+        for item in plan_items:
+            match = item["match"]
+            match_id = item["match_id"]
+            start_epoch = match.get("start_epoch")
+            provider = item["provider"]
+            sport = item["sport"]
+            threshold = item["threshold"]
+            line_rows: list[dict] = []
+            for sel, key in item["sels"]:
+                prev = prev_states.get(key)
                 curr = sel["price"]
                 open_price = curr
                 first_seen = now_dt.isoformat()
@@ -525,7 +584,7 @@ class TennisMonitor:
                         and drop_last >= threshold and drop_from_open >= threshold):
                     is_drop = True
 
-                await self.db.line_state.update_one(
+                line_ops.append(UpdateOne(
                     {"_id": key},
                     {"$set": {
                         "price": curr,
@@ -538,7 +597,7 @@ class TennisMonitor:
                         "match_id": match_id,
                     }},
                     upsert=True,
-                )
+                ))
 
                 if is_drop:
                     drops_found += 1
@@ -606,6 +665,10 @@ class TennisMonitor:
                     "player2": match.get("player2"),
                     "lines": line_rows,
                 })
+
+        # One round-trip for all the line-state upserts this scan produced.
+        if line_ops:
+            await self.db.line_state.bulk_write(line_ops, ordered=False)
 
         cutoff = (now_dt - timedelta(seconds=LINE_STATE_TTL_SECONDS)).isoformat()
         try:
