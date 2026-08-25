@@ -268,7 +268,9 @@ def _settings_out() -> SettingsOut:
         ufc_enabled=monitor.ufc_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
-        providers=list(monitor.clients.keys()),
+        # 'prediction' is not a tennis odds provider (F1/MLB/UFC only) and
+        # must never be selectable as the tennis/football provider.
+        providers=[k for k in monitor.clients.keys() if k != "prediction"],
         telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
         refresh_minutes=REFRESH_MINUTES,
     )
