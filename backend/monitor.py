@@ -131,7 +131,8 @@ SPORT_META = {
 }
 
 # Sports sourced from keyless prediction markets: tracked on the fast loop
-# and with a multi-day window (game cards / race weekends, not 60-min slots).
+# (scanned every F1_REFRESH_SECONDS instead of every REFRESH_MINUTES). They use
+# the same 60-minute pre-match window as every other sport.
 # Limited to F1 and MLB (baseball); UFC was dropped as no Italian book prices it.
 PREDICTION_SPORTS = ("f1", "mlb")
 
@@ -474,12 +475,12 @@ class TennisMonitor:
             if sports is not None and sport not in sports:
                 continue
             client = self.clients[prov]
-            # Prediction-market sports: weekly/daily event cards, not
-            # 60-minute match slots - track several days ahead.
-            if sport in PREDICTION_SPORTS:
-                sport_ws, sport_we = now_ts + 60, now_ts + 4 * 86400
-            else:
-                sport_ws, sport_we = window_start, end_ts
+            # Every sport - prediction markets (F1/MLB) included - uses the same
+            # 60-minute pre-match window: only events starting within the hour
+            # are tracked. (Prediction sports still scan on the fast loop, so an
+            # imminent race/game is polled every F1_REFRESH_SECONDS rather than
+            # once per REFRESH_MINUTES.)
+            sport_ws, sport_we = window_start, end_ts
             raw: list[dict] | None = None
             try:
                 raw = await client.get_pinnacle_matches(sport, sport_ws, sport_we, whitelist)
