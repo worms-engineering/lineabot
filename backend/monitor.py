@@ -45,7 +45,11 @@ SCANS_TTL_SECONDS = 7 * 24 * 60 * 60
 # (site down, signup captcha...) doesn't get hammered every scan.
 ROTATION_COOLDOWN_SECONDS = 5 * 60
 
-DEFAULT_PROVIDER = "theoddsapi"
+# Tennis, basketball and football all run on OddsPapi (full calendar). The Odds
+# API stays available as a switchable provider (and is still used for the
+# football best-Italian-price / Betfair cross-check), but is no longer the
+# default odds source for any sport.
+DEFAULT_PROVIDER = "oddspapi"
 
 # Basketball is tracked only on OddsPapi (the provider with basketball parsing),
 # restricted to these competitions (tournament-name substrings, case-insensitive):
@@ -95,12 +99,12 @@ SPORT_META = {
     "hockey": {"label": "Hockey", "emoji": "🏒"},
     "f1": {"label": "Formula 1", "emoji": "🏎️"},
     "mlb": {"label": "MLB", "emoji": "⚾"},
-    "ufc": {"label": "UFC", "emoji": "🥊"},
 }
 
 # Sports sourced from keyless prediction markets: tracked on the fast loop
 # and with a multi-day window (game cards / race weekends, not 60-min slots).
-PREDICTION_SPORTS = ("f1", "mlb", "ufc")
+# Limited to F1 and MLB (baseball); UFC was dropped as no Italian book prices it.
+PREDICTION_SPORTS = ("f1", "mlb")
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
 
@@ -152,7 +156,6 @@ class TennisMonitor:
         self.hockey_enabled = True
         self.f1_enabled = True
         self.mlb_enabled = True
-        self.ufc_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -193,8 +196,6 @@ class TennisMonitor:
                 self.f1_enabled = bool(cfg["f1_enabled"])
             if "mlb_enabled" in cfg:
                 self.mlb_enabled = bool(cfg["mlb_enabled"])
-            if "ufc_enabled" in cfg:
-                self.ufc_enabled = bool(cfg["ufc_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -240,7 +241,6 @@ class TennisMonitor:
                             hockey_enabled: bool | None = None,
                             f1_enabled: bool | None = None,
                             mlb_enabled: bool | None = None,
-                            ufc_enabled: bool | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -271,9 +271,6 @@ class TennisMonitor:
         if mlb_enabled is not None:
             self.mlb_enabled = bool(mlb_enabled)
             update["mlb_enabled"] = self.mlb_enabled
-        if ufc_enabled is not None:
-            self.ufc_enabled = bool(ufc_enabled)
-            update["ufc_enabled"] = self.ufc_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -422,8 +419,6 @@ class TennisMonitor:
             plan.append(("f1", "prediction", None))
         if self.mlb_enabled:
             plan.append(("mlb", "prediction", None))
-        if self.ufc_enabled:
-            plan.append(("ufc", "prediction", None))
         return plan
 
     async def _scan_impl(self, dry_run_notify: bool,
@@ -694,7 +689,6 @@ class TennisMonitor:
                 "football_provider": self.football_provider,
                 "f1_enabled": self.f1_enabled,
                 "mlb_enabled": self.mlb_enabled,
-                "ufc_enabled": self.ufc_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,

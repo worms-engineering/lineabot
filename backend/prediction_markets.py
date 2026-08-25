@@ -254,15 +254,15 @@ async def kalshi_f1_price(driver: str, start_epoch: int) -> float | None:
 
 
 # Sports tracked as pairwise "A vs. B" events on Polymarket (like WNBA
-# basketball): tag slugs + display label.
+# basketball): tag slugs + display label. UFC was removed (no Italian book
+# prices it); MLB (baseball) is the only versus-style prediction sport now.
 VERSUS_SPORTS = {
     "mlb": (["mlb"], "MLB"),
-    "ufc": (["ufc"], "UFC"),
 }
 
 
 class PredictionMarketsClient:
-    """Monitor-compatible client that tracks F1, MLB and UFC on Polymarket
+    """Monitor-compatible client that tracks F1 and MLB on Polymarket
     (primary) and cross-checks on Kalshi. Probabilities convert to decimal
     odds so drops/steam behave like every other sport. Keyless and
     quota-free."""
@@ -367,9 +367,9 @@ class PredictionMarketsClient:
 
     async def _get_versus_matches(self, sport: str, start_epoch: int,
                                   end_epoch: int) -> list[dict]:
-        """Pairwise 'A vs. B' events (MLB games, UFC fights) as matches with
-        a two-way h2h market each. Same normalization/matching rules as the
-        alert-time lookups."""
+        """Pairwise 'A vs. B' events (MLB games) as matches with a two-way h2h
+        market each. Same normalization/matching rules as the alert-time
+        lookups."""
         tags, label = VERSUS_SPORTS[sport]
         out: list[dict] = []
         for tag in tags:

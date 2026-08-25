@@ -162,7 +162,7 @@ Ogni scansione è gated dal **toggle di tracciamento**:
 
 Puoi accendere/spegnere dal pulsante in dashboard o con `POST /api/tracking {"enabled": true|false}`.
 `REFRESH_MINUTES = 0` disattiva lo scheduler dello scan principale (resta on-demand via
-`/api/refresh`); il fast-loop dei prediction market (F1/MLB/UFC, keyless e gratuito) continua
+`/api/refresh`); il fast-loop dei prediction market (F1 e MLB, keyless e gratuito) continua
 comunque a girare ogni `F1_REFRESH_SECONDS`.
 
 Il tracciamento richiede osservazioni ravvicinate (confronta la quota con quella dello scan

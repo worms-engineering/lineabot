@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", f1: "🏎️", mlb: "⚾", ufc: "🥊" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", f1: "🏎️", mlb: "⚾" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -289,7 +289,7 @@ export default function Dashboard() {
     }
   };
 
-  const pmToggles = [["mlb", !!status?.mlb_enabled, "⚾"], ["ufc", !!status?.ufc_enabled, "🥊"]];
+  const pmToggles = [["mlb", !!status?.mlb_enabled, "⚾"]];
   const togglePmSport = async (key, enabled) => {
     try {
       await axios.put(`${API}/settings`, { [`${key}_enabled`]: !enabled });

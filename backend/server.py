@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Automatic scheduler disabled (REFRESH_MINUTES=%s) - scans are on-demand only", REFRESH_MINUTES)
     # Fast loop for sports whose data source is free (prediction markets):
-    # F1/MLB/UFC scan every F1_REFRESH_SECONDS, independent of the paid
+    # F1/MLB scan every F1_REFRESH_SECONDS, independent of the paid
     # providers' cadence. Partial scans merge into the snapshot without
     # touching the main scan's status.
     if F1_REFRESH_SECONDS > 0:
@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
         logger.info("Prediction-market fast loop scheduled - every %d seconds", F1_REFRESH_SECONDS)
-    # Start once, after both jobs are registered: the fast F1/MLB/UFC loop must
+    # Start once, after both jobs are registered: the fast F1/MLB loop must
     # still run when REFRESH_MINUTES=0 (on-demand main scan), which the old
     # start-inside-the-REFRESH_MINUTES-branch placement silently skipped.
     if scheduler.get_jobs():
@@ -105,7 +105,6 @@ class SettingsIn(BaseModel):
     hockey_enabled: bool | None = None
     f1_enabled: bool | None = None
     mlb_enabled: bool | None = None
-    ufc_enabled: bool | None = None
     provider: str | None = None
     football_provider: str | None = None
     telegram_token: str | None = None
@@ -121,7 +120,6 @@ class SettingsOut(BaseModel):
     hockey_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
-    ufc_enabled: bool
     provider: str
     football_provider: str
     providers: list[str]
@@ -143,7 +141,6 @@ class StatusOut(BaseModel):
     hockey_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
-    ufc_enabled: bool
     provider: str
     football_provider: str
     use_mock_data: bool
@@ -215,7 +212,6 @@ async def get_status():
         hockey_enabled=monitor.hockey_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
-        ufc_enabled=monitor.ufc_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         use_mock_data=monitor.client.use_mock,
@@ -271,10 +267,9 @@ def _settings_out() -> SettingsOut:
         hockey_enabled=monitor.hockey_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
-        ufc_enabled=monitor.ufc_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
-        # 'prediction' is not a tennis odds provider (F1/MLB/UFC only) and
+        # 'prediction' is not a tennis odds provider (F1/MLB only) and
         # must never be selectable as the tennis/football provider.
         providers=[k for k in monitor.clients.keys() if k != "prediction"],
         telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
@@ -302,7 +297,6 @@ async def update_settings(body: SettingsIn):
         hockey_enabled=body.hockey_enabled,
         f1_enabled=body.f1_enabled,
         mlb_enabled=body.mlb_enabled,
-        ufc_enabled=body.ufc_enabled,
         provider=body.provider,
         football_provider=body.football_provider,
         telegram_token=body.telegram_token,
