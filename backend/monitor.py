@@ -128,6 +128,7 @@ SPORT_META = {
     "volley": {"label": "Volley", "emoji": "🏐"},
     "f1": {"label": "Formula 1", "emoji": "🏎️"},
     "mlb": {"label": "MLB", "emoji": "⚾"},
+    "outright": {"label": "Outright", "emoji": "🏆"},
 }
 
 # Sports sourced from keyless prediction markets: tracked on the fast loop
@@ -135,6 +136,25 @@ SPORT_META = {
 # the same 60-minute pre-match window as every other sport.
 # Limited to F1 and MLB (baseball); UFC was dropped as no Italian book prices it.
 PREDICTION_SPORTS = ("f1", "mlb")
+
+# Outright (tournament-winner / award) markets on Polymarket, tracked on the
+# MAIN scan loop and - unlike everything else - with NO 60-minute window: an
+# outright is followed for its whole life, from when the market opens until it
+# closes/resolves (months). Each entry pins a Polymarket tag (`tag`) and, when
+# the tag is broad, a lowercase title substring (`title`) to select the right
+# event; the contender list is built from that event's 'Will <X> win ...?'
+# sub-markets. Restricted to competitions Italian books price. Edit to taste;
+# names/tags verified live against the Polymarket Gamma API.
+OUTRIGHT_MARKETS = [
+    {"emoji": "⚽", "tag": "champions-league", "title": "champion"},
+    {"emoji": "⚽", "tag": "epl", "title": "champion"},
+    {"emoji": "⚽", "tag": "la-liga", "title": "champion"},
+    {"emoji": "⚽", "tag": "serie-a", "title": "champion"},
+    {"emoji": "⚽", "tag": "ligue-1", "title": "champion"},
+    {"emoji": "🏆", "tag": "soccer", "title": "ballon"},   # Pallone d'Oro
+    {"emoji": "🎾", "tag": "tennis", "title": "winner"},    # Slam winners
+    {"emoji": "⛳", "tag": "golf", "title": "winner"},
+]
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
 
@@ -187,6 +207,7 @@ class TennisMonitor:
         self.volley_enabled = True
         self.f1_enabled = True
         self.mlb_enabled = True
+        self.outright_enabled = True
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -229,6 +250,8 @@ class TennisMonitor:
                 self.f1_enabled = bool(cfg["f1_enabled"])
             if "mlb_enabled" in cfg:
                 self.mlb_enabled = bool(cfg["mlb_enabled"])
+            if "outright_enabled" in cfg:
+                self.outright_enabled = bool(cfg["outright_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -275,6 +298,7 @@ class TennisMonitor:
                             volley_enabled: bool | None = None,
                             f1_enabled: bool | None = None,
                             mlb_enabled: bool | None = None,
+                            outright_enabled: bool | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -308,6 +332,9 @@ class TennisMonitor:
         if mlb_enabled is not None:
             self.mlb_enabled = bool(mlb_enabled)
             update["mlb_enabled"] = self.mlb_enabled
+        if outright_enabled is not None:
+            self.outright_enabled = bool(outright_enabled)
+            update["outright_enabled"] = self.outright_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -507,6 +534,20 @@ class TennisMonitor:
                 m["provider"] = prov
                 matches.append(m)
 
+        # Outrights (Polymarket): main loop only, no 60-minute window - tracked
+        # from market open to close. Merged into the same drop-detection pipeline
+        # as everything else (one selection per contender).
+        if self.outright_enabled and (sports is None or "outright" in sports):
+            try:
+                raw = await self.clients["prediction"].get_outright_matches(OUTRIGHT_MARKETS)
+                for m in raw:
+                    m["sport"] = "outright"
+                    m["provider"] = "prediction"
+                    matches.append(m)
+            except Exception as e:
+                logger.warning("outright scan failed: %s", e)
+                sport_errors["outright"] = str(e)
+
         matches_payload: list[dict] = []
         drops_found = 0
         alerts_sent = 0
@@ -694,7 +735,8 @@ class TennisMonitor:
                     "match_id": match_id,
                     "sport": sport,
                     "sport_label": meta.get("label", sport),
-                    "sport_emoji": meta.get("emoji", ""),
+                    # Outrights carry a per-competition emoji (⚽/🎾/⛳/🏆).
+                    "sport_emoji": match.get("emoji") or meta.get("emoji", ""),
                     "start_time": match.get("start_epoch"),
                     "tournament": match.get("tournament"),
                     "player1": match.get("player1"),
@@ -732,6 +774,7 @@ class TennisMonitor:
                 "mlb_enabled": self.mlb_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "volley_enabled": self.volley_enabled,
+                "outright_enabled": self.outright_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,
                 "tracking_enabled": self.tracking_enabled,
@@ -882,18 +925,20 @@ class TennisMonitor:
         if pred:
             extra += f"\n🎯 {pred}"
         sport = match.get("sport")
-        # F1 and MLB are sourced from the keyless prediction markets (Polymarket),
-        # NOT from Pinnacle - so they must never be labelled "PINNACLE DROP".
-        # Name the source in the header so a prediction-market steam move can't be
-        # mistaken for a sharp-book (Pinnacle) drop.
-        is_prediction = sport in PREDICTION_SPORTS
+        # Anything from the keyless prediction markets (F1/MLB games AND the
+        # outright winner markets) is Polymarket-sourced, NOT Pinnacle - so it
+        # must never be labelled "PINNACLE DROP". Key off the provider so the
+        # source in the header is always right.
+        is_prediction = match.get("provider") == "prediction"
         p1, p2 = match.get("player1"), match.get("player2")
         if p2 and sport == "f1" and match.get("player2") in ("Race Winner", "Podium"):
             pairing = f"{esc(str(p1))} · {esc(str(p2))}"
         elif p2:
             pairing = f"{esc(str(p1))} vs {esc(str(p2))}"
-        else:
+        elif p1:
             pairing = esc(str(p1))
+        else:
+            pairing = ""  # outrights have no two-sided pairing
         if is_prediction:
             header = "📉 STEAM Polymarket — " + esc(sport_tag)
             move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
@@ -902,11 +947,14 @@ class TennisMonitor:
             header = "⬇️ PINNACLE DROP — " + esc(sport_tag)
             move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
                          f"(<b>-{drop_last * 100:.1f}%</b>)")
-        return (
-            f"<b>{header}</b>\n"
-            f"{pairing}\n"
-            f"{esc(match.get('tournament') or '')} · start {start_str}\n"
-            f"{esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>\n"
-            f"{move_line}\n"
-            f"da apertura: -{drop_from_open * 100:.1f}%{extra}"
-        )
+        tournament = esc(match.get("tournament") or "")
+        comp_line = f"{tournament} · start {start_str}" if start_str else tournament
+        lines = [f"<b>{header}</b>"]
+        if pairing:
+            lines.append(pairing)
+        if comp_line:
+            lines.append(comp_line)
+        lines.append(f"{esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>")
+        lines.append(move_line)
+        lines.append(f"da apertura: -{drop_from_open * 100:.1f}%{extra}")
+        return "\n".join(lines)

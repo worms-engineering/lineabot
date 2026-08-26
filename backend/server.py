@@ -106,6 +106,7 @@ class SettingsIn(BaseModel):
     volley_enabled: bool | None = None
     f1_enabled: bool | None = None
     mlb_enabled: bool | None = None
+    outright_enabled: bool | None = None
     provider: str | None = None
     football_provider: str | None = None
     telegram_token: str | None = None
@@ -123,6 +124,7 @@ class SettingsOut(BaseModel):
     volley_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
+    outright_enabled: bool
     provider: str
     football_provider: str
     providers: list[str]
@@ -148,6 +150,7 @@ class StatusOut(BaseModel):
     volley_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
+    outright_enabled: bool
     provider: str
     football_provider: str
     use_mock_data: bool
@@ -222,6 +225,7 @@ async def get_status():
         volley_enabled=monitor.volley_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
+        outright_enabled=monitor.outright_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         use_mock_data=monitor.client.use_mock,
@@ -280,6 +284,7 @@ def _settings_out() -> SettingsOut:
         volley_enabled=monitor.volley_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
+        outright_enabled=monitor.outright_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         # 'prediction' is not a tennis odds provider (F1/MLB only) and
@@ -311,6 +316,7 @@ async def update_settings(body: SettingsIn):
         volley_enabled=body.volley_enabled,
         f1_enabled=body.f1_enabled,
         mlb_enabled=body.mlb_enabled,
+        outright_enabled=body.outright_enabled,
         provider=body.provider,
         football_provider=body.football_provider,
         telegram_token=body.telegram_token,

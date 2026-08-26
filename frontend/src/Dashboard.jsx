@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -300,6 +300,17 @@ export default function Dashboard() {
     }
   };
 
+  const outright = !!status?.outright_enabled;
+  const toggleOutright = async () => {
+    try {
+      await axios.put(`${API}/settings`, { outright_enabled: !outright });
+      toast[!outright ? "success" : "info"](`Outright ${!outright ? "attivati" : "disattivati"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const pmToggles = [["mlb", !!status?.mlb_enabled, "⚾"]];
   const togglePmSport = async (key, enabled) => {
     try {
@@ -481,6 +492,19 @@ export default function Dashboard() {
             </button>
           ))}
 
+          <button
+            data-testid="outright-toggle"
+            onClick={toggleOutright}
+            title="Traccia gli outright su Polymarket (vincitore CL/campionati, Pallone d'Oro, Slam tennis, golf) — monitorati dall'apertura alla chiusura del mercato, senza finestra 60 min"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              outright
+                ? "border-[#FFD60A]/40 bg-[#FFD60A]/10 text-[#FFD60A] hover:bg-[#FFD60A]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🏆 {outright ? "ON" : "OFF"}
+          </button>
+
           {football && (
             <div className="flex border border-white/15" data-testid="football-provider-switch" title="Provider quote per il calcio">
               {(settings?.providers || ["theoddsapi", "oddspapi"]).map(p => (
@@ -622,9 +646,9 @@ export default function Dashboard() {
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="text-white text-sm truncate">
-                          {r.match.player2 ? <>{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</> : r.match.player1}
+                          {r.match.player2 ? <>{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</> : (r.match.player1 || r.match.tournament)}
                         </div>
-                        <div className="text-[10px] text-zinc-500 uppercase tracking-widest truncate">{r.match.sport_emoji} {r.match.tournament}</div>
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-widest truncate">{r.match.sport_emoji}{r.match.player1 ? ` ${r.match.tournament}` : ""}</div>
                       </div>
                       <div className="shrink-0 text-right">
                         <DropBadge drop={r.drop_from_open} isDrop={r.is_drop} />
@@ -635,7 +659,7 @@ export default function Dashboard() {
                     </div>
                     <div className="mt-2 flex items-center justify-between text-xs font-mono">
                       <span className="text-zinc-300"><span className="text-zinc-500 uppercase tracking-widest text-[10px]">{r.market_name} · </span>{r.label}</span>
-                      <span className="text-zinc-500">{fmtTime(r.match.start_time)} · in {minsUntil(r.match.start_time)}m</span>
+                      <span className="text-zinc-500">{r.match.start_time ? `${fmtTime(r.match.start_time)} · in ${minsUntil(r.match.start_time)}m` : "outright · mercato aperto"}</span>
                     </div>
                     <div className="mt-1 flex items-center gap-4 text-xs font-mono">
                       <span className="text-zinc-500">Open <span className="text-zinc-300">{r.open_price?.toFixed(2)}</span></span>
@@ -677,16 +701,18 @@ export default function Dashboard() {
                   <tr key={i} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${r.is_drop ? "bg-[#32D74B]/5" : ""}`} data-testid={`line-row-${i}`}>
                     <Td className="text-zinc-400">
                       <div className="flex flex-col leading-tight">
-                        <span>{fmtTime(r.match.start_time)}</span>
-                        <span className="text-[10px] text-zinc-600">in {minsUntil(r.match.start_time)}m</span>
+                        <span>{r.match.start_time ? fmtTime(r.match.start_time) : "aperto"}</span>
+                        {r.match.start_time
+                          ? <span className="text-[10px] text-zinc-600">in {minsUntil(r.match.start_time)}m</span>
+                          : <span className="text-[10px] text-zinc-600">outright</span>}
                       </div>
                     </Td>
                     <Td>
                       <div className="flex flex-col leading-tight">
                         <span className="text-white">
-                          {r.match.player2 ? <>{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</> : r.match.player1}
+                          {r.match.player2 ? <>{r.match.player1} <span className="text-zinc-600">vs</span> {r.match.player2}</> : (r.match.player1 || r.match.tournament)}
                         </span>
-                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest">{r.match.sport_emoji} {r.match.tournament}</span>
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest">{r.match.sport_emoji}{r.match.player1 ? ` ${r.match.tournament}` : ""}</span>
                       </div>
                     </Td>
                     <Td className="text-zinc-400 text-xs uppercase tracking-widest">{r.market_name}</Td>
@@ -746,7 +772,7 @@ export default function Dashboard() {
                   >
                     {a.provider === "prediction" ? "Polymarket" : "Pinnacle"}
                   </span>
-                  <span className="text-white">{a.player1} vs {a.player2}</span>
+                  <span className="text-white">{a.player2 ? `${a.player1} vs ${a.player2}` : (a.player1 || a.tournament)}</span>
                   <span className="text-zinc-600"> · {a.market_name} — </span>
                   <span className="text-white">{a.label}</span>
                   <span className="text-zinc-600"> · </span>

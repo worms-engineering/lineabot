@@ -57,6 +57,21 @@ F1_PROB_BAND = (0.02, 0.97)
 _F1_YES_Q = re.compile(r"^Will\s+(.+?)\s+(?:win|finish|get|achieve)\b", re.I)
 _F1_H2H_Q = re.compile(r"^Who will finish higher:\s*(.+?)\s+or\s+(.+?)\?\s*$", re.I)
 
+# Outright (tournament-winner / award) markets: one contender per binary
+# "Will <name> win ...?" sub-market. Used by get_outright_matches.
+_OUTRIGHT_WIN_Q = re.compile(r"^Will\s+(.+?)\s+win\b", re.I)
+# Polymarket seeds outright fields with generic placeholder contenders ("Team A",
+# "Another Team", "The Field", ...) parked at 0.50 until the slot is assigned -
+# never a real bet, and a resolving placeholder would read as a huge phantom
+# drop, so skip them.
+_OUTRIGHT_PLACEHOLDER = re.compile(
+    r"^(team [a-z0-9]+|another team|the field|field|other|any other)\b", re.I)
+# Only track contenders inside this probability band (outside it the decimal
+# odds are meaningless and it's the longshot tail of a big field).
+OUTRIGHT_PROB_BAND = (0.02, 0.95)
+# Skip thin outright markets - a shallow book makes the % swings noise.
+OUTRIGHT_MIN_LIQUIDITY = 100_000.0
+
 # Words too generic to identify a team on their own ("Manchester United" vs
 # "Manchester City" share "manchester"; "City"/"United" match half of England).
 _GENERIC_WORDS = {"city", "united", "fc", "ac", "sc", "real", "athletic",
@@ -277,6 +292,92 @@ class PredictionMarketsClient:
 
     async def close(self):
         pass
+
+    async def get_outright_matches(self, sources) -> list[dict]:
+        """Tournament-winner / award outrights on Polymarket. Each qualifying
+        event (one per competition, e.g. 'UEFA Champions League: 2027 Champion')
+        becomes ONE match whose selections are the contenders - built from the
+        event's binary 'Will <X> win ...?' sub-markets (Yes price = probability
+        -> decimal odds = 1/Yes). Unlike game markets these are long-lived, so
+        there is no start time / 60-minute window: they're tracked while the
+        market is open (active & not closed).
+
+        `sources`: list of {emoji, tag, title} dicts. `title` (lowercase
+        substring of the event title, or None) pins the wanted event within the
+        tag; only events above OUTRIGHT_MIN_LIQUIDITY are kept, and only
+        contenders inside OUTRIGHT_PROB_BAND are tracked (the rest of the field
+        is unpriced longshots)."""
+        out: list[dict] = []
+        seen: set = set()
+        async with httpx.AsyncClient(timeout=25) as client:
+            for src in sources:
+                tag = src["tag"]
+                title_sub = (src.get("title") or "").lower()
+                emoji = src.get("emoji", "🏆")
+                try:
+                    r = await client.get(_GAMMA_EVENTS, params={
+                        "limit": 200, "active": "true", "closed": "false",
+                        "tag_slug": tag})
+                    events = r.json() if r.status_code == 200 else []
+                except Exception as e:
+                    logger.warning("outright fetch tag=%s failed: %s", tag, e)
+                    continue
+                for e in events if isinstance(events, list) else []:
+                    eid = e.get("id")
+                    if eid in seen:
+                        continue
+                    title = str(e.get("title") or "")
+                    if title_sub and title_sub not in title.lower():
+                        continue
+                    try:
+                        liquidity = float(e.get("liquidity") or 0)
+                    except (TypeError, ValueError):
+                        liquidity = 0.0
+                    if liquidity < OUTRIGHT_MIN_LIQUIDITY:
+                        continue
+                    selections: list[dict] = []
+                    for m in e.get("markets") or []:
+                        mt = _OUTRIGHT_WIN_Q.match(str(m.get("question") or ""))
+                        if not mt:
+                            continue
+                        try:
+                            outs = m.get("outcomes")
+                            prices = m.get("outcomePrices")
+                            if isinstance(outs, str):
+                                outs = json.loads(outs)
+                            if isinstance(prices, str):
+                                prices = json.loads(prices)
+                        except Exception:
+                            continue
+                        if (not outs or not prices or len(outs) != len(prices)
+                                or str(outs[0]).lower() != "yes"):
+                            continue
+                        try:
+                            yes = float(prices[0])
+                        except (TypeError, ValueError):
+                            continue
+                        if not (OUTRIGHT_PROB_BAND[0] <= yes <= OUTRIGHT_PROB_BAND[1]):
+                            continue
+                        price = _to_decimal(yes)
+                        if not price:
+                            continue
+                        cand = mt.group(1).strip()
+                        if _OUTRIGHT_PLACEHOLDER.match(cand):
+                            continue
+                        selections.append({
+                            "market_key": "outright", "market_name": "Vincitore",
+                            "outcome": cand, "point": None, "label": cand,
+                            "price": price})
+                    if len(selections) >= 2:
+                        seen.add(eid)
+                        out.append({
+                            "match_id": f"pm-outright-{eid}",
+                            "tournament": title,
+                            "player1": None, "player2": None,
+                            "start_epoch": None,  # long-lived: no start / no window
+                            "emoji": emoji,
+                            "selections": selections})
+        return out
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int,
                                    end_epoch: int, tournament_filter=None):
