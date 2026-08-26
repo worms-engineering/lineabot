@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -26,6 +27,37 @@ logger = logging.getLogger(__name__)
 
 _GAMMA_EVENTS = "https://gamma-api.polymarket.com/events"
 _KALSHI_MARKETS = "https://api.elections.kalshi.com/trade-api/v2/markets"
+
+# One shared, keep-alive HTTP client for all Polymarket/Kalshi calls. These run
+# very frequently (the fast loop every minute, 8 outright tags per main scan,
+# plus alert cross-checks), and opening a fresh AsyncClient per call paid a full
+# TLS handshake each time. Created lazily inside the event loop; reused via the
+# `_client()` context manager, which yields it WITHOUT closing it on exit.
+_HTTP: httpx.AsyncClient | None = None
+
+
+def _get_http() -> httpx.AsyncClient:
+    global _HTTP
+    if _HTTP is None or _HTTP.is_closed:
+        _HTTP = httpx.AsyncClient(
+            timeout=25.0,
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+        )
+    return _HTTP
+
+
+@asynccontextmanager
+async def _client():
+    """Yield the shared client; does NOT close it (unlike `async with
+    httpx.AsyncClient()`), so connections stay pooled across calls."""
+    yield _get_http()
+
+
+async def _close_http() -> None:
+    global _HTTP
+    if _HTTP is not None and not _HTTP.is_closed:
+        await _HTTP.aclose()
+    _HTTP = None
 
 # sport -> Polymarket tag slugs carrying game moneylines.
 POLYMARKET_TAGS = {
@@ -141,7 +173,7 @@ async def polymarket_price(sport: str, home: str, away: str,
     if not tags or not side:
         return None
     shared = _shared_words(home, away)
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _client() as client:
         for tag in tags:
             try:
                 r = await client.get(_GAMMA_EVENTS, params={
@@ -196,7 +228,7 @@ async def kalshi_price(sport: str, home: str, away: str,
     if not series_list or not side:
         return None
     shared = _shared_words(home, away)
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _client() as client:
         for series in series_list:
             try:
                 r = await client.get(_KALSHI_MARKETS, params={
@@ -248,7 +280,7 @@ async def kalshi_f1_price(driver: str, start_epoch: int) -> float | None:
     (KXF1RACE series, 'Will X win ... Grand Prix?' markets), or None."""
     if not driver:
         return None
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _client() as client:
         try:
             r = await client.get(_KALSHI_MARKETS, params={
                 "series_ticker": "KXF1RACE", "status": "open", "limit": 200})
@@ -291,7 +323,7 @@ class PredictionMarketsClient:
         self.ip_blocked = False
 
     async def close(self):
-        pass
+        await _close_http()
 
     async def get_outright_matches(self, sources) -> list[dict]:
         """Tournament-winner / award outrights on Polymarket. Each qualifying
@@ -309,7 +341,7 @@ class PredictionMarketsClient:
         is unpriced longshots)."""
         out: list[dict] = []
         seen: set = set()
-        async with httpx.AsyncClient(timeout=25) as client:
+        async with _client() as client:
             for src in sources:
                 tag = src["tag"]
                 title_sub = (src.get("title") or "").lower()
@@ -390,7 +422,7 @@ class PredictionMarketsClient:
         if sport != "f1":
             return []
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with _client() as client:
                 r = await client.get(_GAMMA_EVENTS, params={
                     "limit": 500, "active": "true", "closed": "false",
                     "tag_slug": "f1"})
@@ -479,7 +511,7 @@ class PredictionMarketsClient:
         out: list[dict] = []
         for tag in tags:
             try:
-                async with httpx.AsyncClient(timeout=20) as client:
+                async with _client() as client:
                     r = await client.get(_GAMMA_EVENTS, params={
                         "limit": 500, "active": "true", "closed": "false",
                         "tag_slug": tag})

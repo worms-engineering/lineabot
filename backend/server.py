@@ -28,9 +28,11 @@ logging.basicConfig(
 logger = logging.getLogger("tennis-monitor")
 
 REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))  # 6 refresh / ora
-# Fast F1 loop (prediction markets are keyless/free, so it doesn't consume
-# any provider quota). 0 disables it.
-F1_REFRESH_SECONDS = int(os.environ.get("F1_REFRESH_SECONDS", "60"))
+# Fast F1/MLB loop (prediction markets are keyless/free, so it doesn't consume
+# any provider quota). Since these now use the 60-minute window, 120s still gives
+# fine granularity in the hour before an event while halving the idle polling
+# churn vs the old 60s. 0 disables it. Tunable via F1_REFRESH_SECONDS.
+F1_REFRESH_SECONDS = int(os.environ.get("F1_REFRESH_SECONDS", "120"))
 
 mongo_url = os.environ["MONGO_URL"]
 db_name = os.environ["DB_NAME"]

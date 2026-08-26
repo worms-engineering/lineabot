@@ -160,6 +160,10 @@ OUTRIGHT_MARKETS = [
     # events (Tour Championship, majors) survive.
     {"emoji": "⛳", "tag": "golf", "title": "winner", "min_liquidity": 250_000},
 ]
+# Outrights move over weeks, so re-fetching them every main scan is wasteful and
+# adds intraday noise. Refresh them at most this often; in between, the previous
+# outright snapshot is carried forward unchanged. Tunable via env.
+OUTRIGHT_REFRESH_SECONDS = int(os.environ.get("OUTRIGHT_REFRESH_SECONDS", str(30 * 60)))
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
 
@@ -213,6 +217,7 @@ class TennisMonitor:
         self.f1_enabled = True
         self.mlb_enabled = True
         self.outright_enabled = True
+        self._last_outright_scan: datetime | None = None
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -447,14 +452,19 @@ class TennisMonitor:
                     self.last_scan_at = started
                     self.last_scan_error = None
                     self.last_scan_stats = result
-                await self.db.scans.insert_one({
-                    "_id": str(uuid.uuid4()),
-                    "started_at": started.isoformat(),
-                    "created_at": started,  # BSON date, drives the TTL index
-                    "stats": result,
-                    "partial": sports is not None,
-                    "error": None,
-                })
+                # Only the main scan writes a success audit doc; the fast partial
+                # loop (every ~1-2 min) would otherwise flood the scans collection
+                # (~1k docs/day) for no diagnostic value. Failures are still logged
+                # below regardless of scan type.
+                if sports is None:
+                    await self.db.scans.insert_one({
+                        "_id": str(uuid.uuid4()),
+                        "started_at": started.isoformat(),
+                        "created_at": started,  # BSON date, drives the TTL index
+                        "stats": result,
+                        "partial": False,
+                        "error": None,
+                    })
                 return result
             except Exception as e:
                 logger.exception("scan failed")
@@ -541,17 +551,25 @@ class TennisMonitor:
 
         # Outrights (Polymarket): main loop only, no 60-minute window - tracked
         # from market open to close. Merged into the same drop-detection pipeline
-        # as everything else (one selection per contender).
+        # as everything else (one selection per contender). Refreshed on their own
+        # slow cadence (they barely move intraday); on cycles where we skip the
+        # fetch, the previous outright snapshot is carried forward below.
+        scanned_outright = False
         if self.outright_enabled and (sports is None or "outright" in sports):
-            try:
-                raw = await self.clients["prediction"].get_outright_matches(OUTRIGHT_MARKETS)
-                for m in raw:
-                    m["sport"] = "outright"
-                    m["provider"] = "prediction"
-                    matches.append(m)
-            except Exception as e:
-                logger.warning("outright scan failed: %s", e)
-                sport_errors["outright"] = str(e)
+            due = (self._last_outright_scan is None or
+                   (now_dt - self._last_outright_scan).total_seconds() >= OUTRIGHT_REFRESH_SECONDS)
+            if due:
+                try:
+                    raw = await self.clients["prediction"].get_outright_matches(OUTRIGHT_MARKETS)
+                    for m in raw:
+                        m["sport"] = "outright"
+                        m["provider"] = "prediction"
+                        matches.append(m)
+                    self._last_outright_scan = now_dt
+                    scanned_outright = True
+                except Exception as e:
+                    logger.warning("outright scan failed: %s", e)
+                    sport_errors["outright"] = str(e)
 
         matches_payload: list[dict] = []
         drops_found = 0
@@ -773,11 +791,19 @@ class TennisMonitor:
 
         if sports is not None:
             # Partial scan (e.g. the fast F1 loop): keep the other sports'
-            # matches in the shared snapshot instead of wiping them.
+            # matches in the shared snapshot instead of wiping them. (This also
+            # preserves outrights, whose sport is never in the partial set.)
             existing = await self.db.snapshots.find_one({"_id": "latest"}) or {}
             kept = [m for m in existing.get("matches") or []
                     if m.get("sport") not in sports]
             matches_payload = kept + matches_payload
+        elif self.outright_enabled and not scanned_outright:
+            # Full scan that didn't refresh outrights this cycle (slow cadence):
+            # carry the previous outright matches forward so they don't vanish.
+            existing = await self.db.snapshots.find_one({"_id": "latest"}) or {}
+            have = {m.get("match_id") for m in matches_payload}
+            matches_payload += [m for m in existing.get("matches") or []
+                                if m.get("sport") == "outright" and m.get("match_id") not in have]
 
         await self.db.snapshots.update_one(
             {"_id": "latest"},
