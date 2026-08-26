@@ -314,6 +314,10 @@ class PredictionMarketsClient:
                 tag = src["tag"]
                 title_sub = (src.get("title") or "").lower()
                 emoji = src.get("emoji", "🏆")
+                # Per-source liquidity floor (falls back to the global one) so a
+                # noisy category - e.g. golf, where the tag pulls in thin minor
+                # tours - can demand deeper markets than the default.
+                floor = src.get("min_liquidity", OUTRIGHT_MIN_LIQUIDITY)
                 try:
                     r = await client.get(_GAMMA_EVENTS, params={
                         "limit": 200, "active": "true", "closed": "false",
@@ -333,7 +337,7 @@ class PredictionMarketsClient:
                         liquidity = float(e.get("liquidity") or 0)
                     except (TypeError, ValueError):
                         liquidity = 0.0
-                    if liquidity < OUTRIGHT_MIN_LIQUIDITY:
+                    if liquidity < floor:
                         continue
                     selections: list[dict] = []
                     for m in e.get("markets") or []:

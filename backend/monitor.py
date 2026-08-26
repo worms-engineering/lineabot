@@ -153,7 +153,10 @@ OUTRIGHT_MARKETS = [
     {"emoji": "⚽", "tag": "ligue-1", "title": "champion"},
     {"emoji": "🏆", "tag": "soccer", "title": "ballon"},   # Pallone d'Oro
     {"emoji": "🎾", "tag": "tennis", "title": "winner"},    # Slam winners
-    {"emoji": "⛳", "tag": "golf", "title": "winner"},
+    # Golf: the tag pulls in thin minor tours (LPGA/DP World secondary events)
+    # that flooded alerts - require a deeper book so only majors + flagship
+    # events (Tour Championship, majors) survive.
+    {"emoji": "⛳", "tag": "golf", "title": "winner", "min_liquidity": 250_000},
 ]
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
