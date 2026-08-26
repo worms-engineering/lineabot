@@ -32,8 +32,10 @@ logger = logging.getLogger(__name__)
 
 WINDOW_SECONDS = 60 * 60
 # Ignore matches about to start: leaves time to act and avoids tracking/alerting
-# a match that will have kicked off by the time you see it.
-MIN_LEAD_SECONDS = 90
+# a match that will have kicked off by the time you see it. 90s proved too tight
+# (a rate-limited scan + Telegram delivery can outlast it, and providers lag/shift
+# start times), so default to a 5-minute lead. Tunable via MIN_LEAD_SECONDS.
+MIN_LEAD_SECONDS = int(os.environ.get("MIN_LEAD_SECONDS", "300"))
 DEFAULT_DROP_THRESHOLD = 0.05
 MAX_BASELINE_AGE_SECONDS = 30 * 60
 LINE_STATE_TTL_SECONDS = 6 * 60 * 60
@@ -663,6 +665,18 @@ class TennisMonitor:
                 if (prev and observations >= 3 and fresh and not suspect_live
                         and drop_last >= threshold and drop_from_open >= threshold):
                     is_drop = True
+
+                # Final freshness gate against a LIVE clock. The pre-pass filters
+                # on now_ts captured at scan start, but a rate-limited scan takes
+                # 10-30s and sends earlier alerts before reaching this one, and
+                # providers lag/shift start times - so a match can cross its start
+                # (or fall inside the lead) between the pre-pass and now. Require
+                # MIN_LEAD_SECONDS of real lead at this instant or drop the alert:
+                # this is what stops alerts on already-started matches. (Outrights
+                # have no start_epoch and are exempt.)
+                if is_drop and start_epoch is not None and \
+                        start_epoch - int(_now().timestamp()) < MIN_LEAD_SECONDS:
+                    is_drop = False
 
                 line_ops.append(UpdateOne(
                     {"_id": key},
