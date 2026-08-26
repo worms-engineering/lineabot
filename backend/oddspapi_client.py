@@ -35,6 +35,17 @@ _BOOKMAKER_CHUNK_LIMITS = {"betfair-ex": 3}
 _MIN_REQUEST_INTERVAL = 1.05
 _MAX_RETRIES = 5
 
+# The fixture list (which matches are in the window) changes slowly, but ODDS
+# change scan to scan. Cache /fixtures per sport for this long and re-fetch odds
+# every scan: at a short REFRESH_MINUTES this collapses several /fixtures calls
+# into one (the single biggest OddsPapi cost). To stay covered while cached, the
+# fetch reaches WINDOW + TTL + margin ahead, and each scan re-filters the cached
+# list to the live window. Trade-off: a newly-listed fixture can appear up to TTL
+# late (still 45+ min of lead), and a provider start-time shift is seen up to TTL
+# late (the alert-time freshness gate keeps that safe). 0 disables the cache.
+FIXTURES_CACHE_TTL = float(os.environ.get("FIXTURES_CACHE_TTL", "600"))
+_FIXTURES_FETCH_MARGIN = 300  # seconds of extra horizon beyond WINDOW + TTL
+
 SHARP_BOOK = "pinnacle"
 # Whole-match total-line band per sport, used to isolate the real main total
 # from other markets that share the same "/0/totals" suffix:
@@ -214,6 +225,8 @@ class OddsPapiClient:
         self.requests_remaining: int | None = None  # OddsPapi has no quota header
         self.quota_exhausted = False
         self.ip_blocked = False
+        # sportId -> (monotonic fetch time, fixtures list) for the /fixtures cache.
+        self._fixtures_cache: dict[int, tuple[float, list[dict]]] = {}
 
     async def close(self):
         await self._client.aclose()
@@ -294,6 +307,22 @@ class OddsPapiClient:
             raise
         return data if isinstance(data, list) else []
 
+    async def _get_fixtures_cached(self, sport_id: int, fetch_from: int,
+                                   fetch_to: int) -> list[dict]:
+        """/fixtures with a per-sport time cache. Returns the (possibly cached)
+        fixture list; the caller re-applies its live-window filter, so a slightly
+        stale list is fine. On a miss, fetches the wider [fetch_from, fetch_to]
+        horizon so it stays covered until the TTL expires."""
+        if FIXTURES_CACHE_TTL <= 0:
+            return await self.get_fixtures(fetch_from, fetch_to, sport_id)
+        now = time.monotonic()
+        cached = self._fixtures_cache.get(sport_id)
+        if cached is not None and now - cached[0] < FIXTURES_CACHE_TTL:
+            return cached[1]
+        data = await self.get_fixtures(fetch_from, fetch_to, sport_id)
+        self._fixtures_cache[sport_id] = (now, data)
+        return data
+
     async def get_odds_by_tournaments(self, bookmaker: str, tournament_ids: list[int],
                                       chunk_size: int = TOURNAMENT_CHUNK_SIZE) -> list[dict]:
         if not tournament_ids:
@@ -327,7 +356,11 @@ class OddsPapiClient:
 
         sport_id = SPORT_IDS.get(sport, TENNIS_SPORT_ID)
         window: list[dict] = []
-        for fx in await self.get_fixtures(start_epoch, end_epoch, sport_id):
+        # Fetch (and cache) fixtures reaching past the live window so the cached
+        # list still covers it as the clock advances during the TTL; the loop
+        # below re-filters to the caller's exact [start_epoch, end_epoch].
+        fetch_to = end_epoch + int(FIXTURES_CACHE_TTL) + _FIXTURES_FETCH_MARGIN
+        for fx in await self._get_fixtures_cached(sport_id, start_epoch, fetch_to):
             if not fx.get("hasOdds") or not _is_real_event(fx):
                 continue
             # statusId (id-feed only): 0=prelive, 1=live, 2=ended. The pn
