@@ -114,6 +114,7 @@ class SettingsIn(BaseModel):
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
     oddspapi_api_key: str | None = None
+    theoddsapi_api_key: str | None = None
 
 
 class SettingsOut(BaseModel):
@@ -135,6 +136,7 @@ class SettingsOut(BaseModel):
     # Masked hint of the active OddsPapi key (last 4 chars) so the dashboard can
     # confirm which key is live without ever exposing the full value.
     oddspapi_key_hint: str | None
+    theoddsapi_key_hint: str | None
 
 
 class StatusOut(BaseModel):
@@ -275,8 +277,10 @@ async def set_tracking(body: TrackingIn):
 
 def _settings_out() -> SettingsOut:
     op_key = monitor.clients["oddspapi"].api_key
+    toa_key = monitor.clients["theoddsapi"].api_key
     return SettingsOut(
         oddspapi_key_hint=f"…{op_key[-4:]}" if op_key else None,
+        theoddsapi_key_hint=f"…{toa_key[-4:]}" if toa_key else None,
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
@@ -325,6 +329,8 @@ async def update_settings(body: SettingsIn):
         telegram_chat_id=body.telegram_chat_id,
         oddspapi_api_key=(body.oddspapi_api_key.strip() or None)
         if body.oddspapi_api_key is not None else None,
+        theoddsapi_api_key=(body.theoddsapi_api_key.strip() or None)
+        if body.theoddsapi_api_key is not None else None,
     )
     return _settings_out()
 

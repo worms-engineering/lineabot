@@ -860,6 +860,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const [token, setToken] = useState("");
   const [chatId, setChatId] = useState("");
   const [oddspapiKey, setOddspapiKey] = useState("");
+  const [theoddsapiKey, setTheoddsapiKey] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -876,9 +877,10 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
       if (token) body.telegram_token = token;
       if (chatId) body.telegram_chat_id = chatId;
       if (oddspapiKey.trim()) body.oddspapi_api_key = oddspapiKey.trim();
+      if (theoddsapiKey.trim()) body.theoddsapi_api_key = theoddsapiKey.trim();
       await axios.put(`${API}/settings`, body);
       toast.success("Impostazioni salvate");
-      setToken(""); setChatId(""); setOddspapiKey("");
+      setToken(""); setChatId(""); setOddspapiKey(""); setTheoddsapiKey("");
       await onSaved();
       setOpen(false);
     } catch (e) {
@@ -966,6 +968,21 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
             />
             {settings?.oddspapi_key_hint && (
               <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Key attiva: {settings.oddspapi_key_hint}</div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-widest text-zinc-400">The Odds API key</div>
+            <div className="text-[10px] text-zinc-600">Usata per tennis/calcio se selezioni "The Odds API" e per il cross-check miglior quota ITA + Betfair sul calcio. Lascia vuoto per non cambiare.</div>
+            <Input
+              data-testid="settings-theoddsapi-key"
+              value={theoddsapiKey}
+              onChange={e => setTheoddsapiKey(e.target.value)}
+              placeholder="es. a1b2c3d4e5f6..."
+              className="rounded-none bg-[#0A0A0A] border-white/20 font-mono"
+            />
+            {settings?.theoddsapi_key_hint && (
+              <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Key attiva: {settings.theoddsapi_key_hint}</div>
             )}
           </div>
 

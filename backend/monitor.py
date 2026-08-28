@@ -274,6 +274,11 @@ class TennisMonitor:
             oddspapi_key = cfg.get("oddspapi_api_key")
             if oddspapi_key:
                 self.clients["oddspapi"].api_key = oddspapi_key
+            # Same precedence for The Odds API: a dashboard-saved key wins over
+            # the THE_ODDS_API_KEY env var (which stays the initial seed).
+            theoddsapi_key = cfg.get("theoddsapi_api_key")
+            if theoddsapi_key:
+                self.clients["theoddsapi"].api_key = theoddsapi_key
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
             if token:
@@ -313,7 +318,8 @@ class TennisMonitor:
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
                             telegram_chat_id: str | None = None,
-                            oddspapi_api_key: str | None = None):
+                            oddspapi_api_key: str | None = None,
+                            theoddsapi_api_key: str | None = None):
         update: dict[str, Any] = {}
         if drop_threshold is not None:
             self.drop_threshold = float(drop_threshold)
@@ -364,6 +370,9 @@ class TennisMonitor:
         if oddspapi_api_key is not None:
             self.clients["oddspapi"].api_key = oddspapi_api_key
             update["oddspapi_api_key"] = oddspapi_api_key
+        if theoddsapi_api_key is not None:
+            self.clients["theoddsapi"].api_key = theoddsapi_api_key
+            update["theoddsapi_api_key"] = theoddsapi_api_key
         if update:
             await self.db.settings.update_one(
                 {"_id": "config"}, {"$set": update}, upsert=True
