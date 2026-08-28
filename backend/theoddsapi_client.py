@@ -42,6 +42,8 @@ FOOTBALL_LEAGUE_KEYS = [
     "soccer_uefa_champs_league",           # Champions League
     "soccer_uefa_europa_league",           # Europa League
     "soccer_uefa_europa_conference_league",  # Conference League
+    "soccer_brazil_campeonato",            # Brazil Serie A (Brasileirao)
+    "soccer_argentina_primera_division",   # Argentina Primera (Liga Profesional)
 ]
 DEFAULT_REGIONS = "eu"
 DEFAULT_MARKETS = "h2h,totals"

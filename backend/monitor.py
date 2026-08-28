@@ -109,6 +109,18 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     ("france", "ligue 1"),
     ("netherlands", "eredivisie"),  # exact match: excludes "Eredivisie SRL" (virtual)
     ("portugal", "liga portugal"),  # exact match: excludes "Liga Portugal 2"/"3"
+    # Brazil Serie A (Brasileirao) and Argentina Primera (Liga Profesional), top
+    # flight only. OddsPapi's exact spelling for these couldn't be verified live
+    # (the free key was quota-exhausted at 250 req), so several likely exact names
+    # are listed - the right one matches, the rest stay inert. If neither league
+    # shows up in a scan, verify the real name via GET /v4/tournaments?sportId=10
+    # with a fresh key and keep just that one.
+    ("brazil", "serie a"),
+    ("brazil", "brasileiro serie a"),
+    ("brazil", "brasileirao serie a"),
+    ("argentina", "liga profesional"),
+    ("argentina", "liga profesional argentina"),
+    ("argentina", "primera division"),
     (None, "champions league", "contains"),
     (None, "europa league", "contains"),
     (None, "conference league", "contains"),
