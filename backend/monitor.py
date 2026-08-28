@@ -115,6 +115,10 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     # "Copa de la Liga" cup.
     ("brazil", "brasileiro serie a"),   # Brasileirao Serie A (id 325)
     ("argentina", "liga profesional"),  # Liga Profesional (id 155)
+    # Liga MX runs as two split-season tournaments; excludes "Liga de Expansion
+    # MX" (2nd tier) and "Liga Premier" (lower).
+    ("mexico", "liga mx, apertura"),    # Liga MX Apertura (id 27464)
+    ("mexico", "liga mx, clausura"),    # Liga MX Clausura (id 27466)
     (None, "champions league", "contains"),
     (None, "europa league", "contains"),
     (None, "conference league", "contains"),

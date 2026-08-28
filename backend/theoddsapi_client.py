@@ -44,6 +44,7 @@ FOOTBALL_LEAGUE_KEYS = [
     "soccer_uefa_europa_conference_league",  # Conference League
     "soccer_brazil_campeonato",            # Brazil Serie A (Brasileirao)
     "soccer_argentina_primera_division",   # Argentina Primera (Liga Profesional)
+    "soccer_mexico_ligamx",                # Mexico Liga MX
 ]
 DEFAULT_REGIONS = "eu"
 DEFAULT_MARKETS = "h2h,totals"
@@ -73,6 +74,7 @@ SHARP_EXCHANGE = ("betfair_ex_uk", "Betfair EX")
 LEAGUE_SPORT_KEYS = [
     ("brasileiro serie a", "soccer_brazil_campeonato"),
     ("liga profesional", "soccer_argentina_primera_division"),
+    ("liga mx", "soccer_mexico_ligamx"),
     ("premier league", "soccer_epl"),
     ("laliga", "soccer_spain_la_liga"),
     ("la liga", "soccer_spain_la_liga"),
