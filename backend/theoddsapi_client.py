@@ -68,7 +68,11 @@ SHARP_EXCHANGE = ("betfair_ex_uk", "Betfair EX")
 
 # OddsPapi tournament-name substring -> The Odds API sport key, used to
 # locate the same match on The Odds API for the best-Italy-price lookup.
+# First match wins, so "brasileiro serie a" MUST precede the generic "serie a"
+# (Italy) or a Brazil drop would be looked up in the wrong league.
 LEAGUE_SPORT_KEYS = [
+    ("brasileiro serie a", "soccer_brazil_campeonato"),
+    ("liga profesional", "soccer_argentina_primera_division"),
     ("premier league", "soccer_epl"),
     ("laliga", "soccer_spain_la_liga"),
     ("la liga", "soccer_spain_la_liga"),
