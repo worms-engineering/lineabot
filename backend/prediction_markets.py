@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -103,6 +104,23 @@ _OUTRIGHT_PLACEHOLDER = re.compile(
 OUTRIGHT_PROB_BAND = (0.02, 0.95)
 # Skip thin outright markets - a shallow book makes the % swings noise.
 OUTRIGHT_MIN_LIQUIDITY = 100_000.0
+
+# Reject markets with no real order book. A Polymarket market with ~0 current
+# liquidity has no depth to trade against, so its "price" is a stale last trade
+# (or a resolved 1/0) and unreliable - exactly the markets that produced bogus
+# odds. Require at least this much book liquidity to trust the price. Tunable.
+PM_MIN_LIQUIDITY = float(os.environ.get("PM_MIN_LIQUIDITY", "500"))
+
+
+def _market_liquidity(m: dict) -> float:
+    """Current order-book liquidity (USD) of a Polymarket market; 0 if absent."""
+    v = m.get("liquidityNum")
+    if v is None:
+        v = m.get("liquidity")
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
 
 # Words too generic to identify a team on their own ("Manchester United" vs
 # "Manchester City" share "manchester"; "City"/"United" match half of England).
@@ -376,6 +394,8 @@ class PredictionMarketsClient:
                         mt = _OUTRIGHT_WIN_Q.match(str(m.get("question") or ""))
                         if not mt:
                             continue
+                        if _market_liquidity(m) < PM_MIN_LIQUIDITY:
+                            continue  # 0-liquidity contender -> unreliable price
                         try:
                             outs = m.get("outcomes")
                             prices = m.get("outcomePrices")
@@ -458,6 +478,8 @@ class PredictionMarketsClient:
                     continue
                 if not outcomes or not prices or len(outcomes) != len(prices):
                     continue
+                if _market_liquidity(m) < PM_MIN_LIQUIDITY:
+                    continue  # no order book -> price untradeable/unreliable
                 start_ts = game_ts if start_ts is None else min(start_ts, game_ts)
                 q = str(m.get("question") or "")
                 if mkey == "h2h":
@@ -543,6 +565,8 @@ class PredictionMarketsClient:
                             or outcomes[0].lower() in ("yes", "no")
                             or outcomes[1].lower() in ("yes", "no")):
                         continue
+                    if _market_liquidity(m) < PM_MIN_LIQUIDITY:
+                        continue  # no order book -> price untradeable/unreliable
                     selections = []
                     ok = True
                     for i, (name, p) in enumerate(zip(outcomes, prices)):
