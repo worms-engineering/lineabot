@@ -33,6 +33,8 @@ REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))  # 6 refresh / or
 # fine granularity in the hour before an event while halving the idle polling
 # churn vs the old 60s. 0 disables it. Tunable via F1_REFRESH_SECONDS.
 F1_REFRESH_SECONDS = int(os.environ.get("F1_REFRESH_SECONDS", "120"))
+# Whale monitor loop (keyless Polymarket Data API). 0 disables it.
+WHALE_REFRESH_SECONDS = int(os.environ.get("WHALE_REFRESH_SECONDS", "120"))
 
 mongo_url = os.environ["MONGO_URL"]
 db_name = os.environ["DB_NAME"]
@@ -77,6 +79,18 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
         logger.info("Prediction-market fast loop scheduled - every %d seconds", F1_REFRESH_SECONDS)
+    # Whale monitor: keyless Polymarket trade feed, independent of the odds scans
+    # and the tracking toggle (gated only by whale_enabled inside scan_whales).
+    if WHALE_REFRESH_SECONDS > 0:
+        scheduler.add_job(
+            monitor.scan_whales,
+            trigger=IntervalTrigger(seconds=WHALE_REFRESH_SECONDS),
+            id="whale-scan",
+            next_run_time=datetime.now(timezone.utc),
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info("Whale monitor scheduled - every %d seconds", WHALE_REFRESH_SECONDS)
     # Start once, after both jobs are registered: the fast F1/MLB loop must
     # still run when REFRESH_MINUTES=0 (on-demand main scan), which the old
     # start-inside-the-REFRESH_MINUTES-branch placement silently skipped.
@@ -109,6 +123,7 @@ class SettingsIn(BaseModel):
     f1_enabled: bool | None = None
     mlb_enabled: bool | None = None
     outright_enabled: bool | None = None
+    whale_enabled: bool | None = None
     provider: str | None = None
     football_provider: str | None = None
     telegram_token: str | None = None
@@ -128,6 +143,7 @@ class SettingsOut(BaseModel):
     f1_enabled: bool
     mlb_enabled: bool
     outright_enabled: bool
+    whale_enabled: bool
     provider: str
     football_provider: str
     providers: list[str]
@@ -155,6 +171,7 @@ class StatusOut(BaseModel):
     f1_enabled: bool
     mlb_enabled: bool
     outright_enabled: bool
+    whale_enabled: bool
     provider: str
     football_provider: str
     use_mock_data: bool
@@ -230,6 +247,7 @@ async def get_status():
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
         outright_enabled=monitor.outright_enabled,
+        whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         use_mock_data=monitor.client.use_mock,
@@ -291,6 +309,7 @@ def _settings_out() -> SettingsOut:
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
         outright_enabled=monitor.outright_enabled,
+        whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         # 'prediction' is not a tennis odds provider (F1/MLB only) and
@@ -323,6 +342,7 @@ async def update_settings(body: SettingsIn):
         f1_enabled=body.f1_enabled,
         mlb_enabled=body.mlb_enabled,
         outright_enabled=body.outright_enabled,
+        whale_enabled=body.whale_enabled,
         provider=body.provider,
         football_provider=body.football_provider,
         telegram_token=body.telegram_token,

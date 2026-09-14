@@ -311,6 +311,17 @@ export default function Dashboard() {
     }
   };
 
+  const whale = !!status?.whale_enabled;
+  const toggleWhale = async () => {
+    try {
+      await axios.put(`${API}/settings`, { whale_enabled: !whale });
+      toast[!whale ? "success" : "info"](`Whale monitor ${!whale ? "attivato" : "disattivato"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const pmToggles = [["mlb", !!status?.mlb_enabled, "⚾"]];
   const togglePmSport = async (key, enabled) => {
     try {
@@ -503,6 +514,19 @@ export default function Dashboard() {
             }`}
           >
             🏆 {outright ? "ON" : "OFF"}
+          </button>
+
+          <button
+            data-testid="whale-toggle"
+            onClick={toggleWhale}
+            title="Monitor whale: rileva grandi ordini (≥$10k) su Polymarket sui mercati degli sport monitorati (calcio, tennis, basket, F1, MLB, outright)"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              whale
+                ? "border-[#0A84FF]/40 bg-[#0A84FF]/10 text-[#0A84FF] hover:bg-[#0A84FF]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🐋 {whale ? "ON" : "OFF"}
           </button>
 
           {football && (
@@ -755,6 +779,25 @@ export default function Dashboard() {
             )}
             {alerts.filter(a => !(hideStarted && isUnderway(a, now))).map((a, i) => {
               const underway = isUnderway(a, now);
+              if (a.type === "whale") {
+                const buy = a.whale_side === "BUY";
+                return (
+                <div key={`${i}-${a.created_at}-${a.label}`} className="py-1 border-b border-white/5 flex items-start gap-2 md:gap-3" data-testid="alert-row">
+                  <span className="text-zinc-600 shrink-0 whitespace-nowrap">{new Date(a.created_at).toLocaleTimeString()}</span>
+                  {a.telegram_ok ? <CheckCircle2 size={12} className="text-[#32D74B] shrink-0 mt-0.5" /> : <XCircle size={12} className="text-[#FF3B30] shrink-0 mt-0.5" />}
+                  <span className="text-zinc-300 min-w-0 break-words">
+                    <span className="mr-1">🐋</span>
+                    <span className="text-[#0A84FF]">{a.tournament}</span>
+                    <span className="text-white"> {a.player1}</span>
+                    <span className="text-zinc-600"> · </span>
+                    <span className={buy ? "text-[#32D74B]" : "text-[#FF3B30]"}>{buy ? "COMPRA" : "VENDE"} ${a.whale_usd?.toLocaleString()}</span>
+                    <span className="text-zinc-600"> su </span>
+                    <span className="text-white">{a.label}</span>
+                    <span className="text-zinc-600"> @ {a.price?.toFixed(3)}</span>
+                  </span>
+                </div>
+                );
+              }
               return (
               <div key={`${i}-${a.created_at}-${a.label}`} className={`py-1 border-b border-white/5 flex items-start gap-2 md:gap-3 ${underway ? "opacity-50" : ""}`} data-testid="alert-row">
                 <span className="text-zinc-600 shrink-0 whitespace-nowrap">{new Date(a.created_at).toLocaleTimeString()}</span>

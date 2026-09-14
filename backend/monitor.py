@@ -42,6 +42,9 @@ LINE_STATE_TTL_SECONDS = 6 * 60 * 60
 # The scans collection is a write-only audit log; auto-expire it so the fast
 # prediction-market loop (a doc/minute) can't grow it without bound.
 SCANS_TTL_SECONDS = 7 * 24 * 60 * 60
+# Whale monitor: rebuild the (large, slow-changing) conditionId->sport map at
+# most this often; the whale trade feed itself is polled every scan.
+WHALE_CONDMAP_TTL_SECONDS = 10 * 60
 
 # Minimum time between auto key-rotation attempts, so a broken generator
 # (site down, signup captcha...) doesn't get hammered every scan.
@@ -228,6 +231,11 @@ class TennisMonitor:
         self.mlb_enabled = True
         self.outright_enabled = True
         self._last_outright_scan: datetime | None = None
+        self.whale_enabled = True
+        self._whale_seen: set[str] = set()
+        self._whale_baselined = False
+        self._whale_condmap: dict[str, tuple] = {}
+        self._whale_condmap_at: datetime | None = None
         self._lock = asyncio.Lock()
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
@@ -272,6 +280,8 @@ class TennisMonitor:
                 self.mlb_enabled = bool(cfg["mlb_enabled"])
             if "outright_enabled" in cfg:
                 self.outright_enabled = bool(cfg["outright_enabled"])
+            if "whale_enabled" in cfg:
+                self.whale_enabled = bool(cfg["whale_enabled"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -324,6 +334,7 @@ class TennisMonitor:
                             f1_enabled: bool | None = None,
                             mlb_enabled: bool | None = None,
                             outright_enabled: bool | None = None,
+                            whale_enabled: bool | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -361,6 +372,9 @@ class TennisMonitor:
         if outright_enabled is not None:
             self.outright_enabled = bool(outright_enabled)
             update["outright_enabled"] = self.outright_enabled
+        if whale_enabled is not None:
+            self.whale_enabled = bool(whale_enabled)
+            update["whale_enabled"] = self.whale_enabled
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -1020,3 +1034,82 @@ class TennisMonitor:
         lines.append(move_line)
         lines.append(f"da apertura: -{drop_from_open * 100:.1f}%{extra}")
         return "\n".join(lines)
+
+    async def scan_whales(self, dry_run_notify: bool = False) -> dict:
+        """Poll Polymarket's whale trade feed and alert on large single orders
+        (>= WHALE_MIN_USD) placed on markets in the watched sports. Keyless and
+        independent of the odds scans / tracking toggle - gated only by
+        whale_enabled. First run baselines the seen-set without alerting so a
+        restart doesn't replay old whale trades."""
+        if not self.whale_enabled:
+            return {"whales": 0, "skipped": True}
+        pred = self.clients["prediction"]
+        now = _now()
+        if (not self._whale_condmap or self._whale_condmap_at is None
+                or (now - self._whale_condmap_at).total_seconds() >= WHALE_CONDMAP_TTL_SECONDS):
+            try:
+                self._whale_condmap = await pred.get_whale_condition_map(pmk.WHALE_TAGS)
+                self._whale_condmap_at = now
+            except Exception as e:
+                logger.warning("whale condmap refresh failed: %s", e)
+        try:
+            trades = await pred.get_whale_trades(pmk.WHALE_MIN_USD)
+        except Exception as e:
+            logger.warning("whale scan failed: %s", e)
+            return {"whales": 0, "error": str(e)}
+        sent = 0
+        for t in trades:
+            tx = t.get("tx")
+            if not tx or tx in self._whale_seen:
+                continue
+            self._whale_seen.add(tx)
+            if not self._whale_baselined:
+                continue  # first pass: seed the seen-set, don't replay history
+            info = self._whale_condmap.get(t.get("cond"))
+            if info is None:
+                continue  # trade isn't on a watched sport's market
+            emoji, label, title = info
+            text = self._format_whale_alert(t, emoji, label, title)
+            tg = {"ok": False}
+            if not dry_run_notify:
+                try:
+                    tg = await self.telegram.send_message(text)
+                except Exception as e:
+                    tg = {"ok": False, "error": str(e)}
+            await self.db.alerts.insert_one({
+                "_id": str(uuid.uuid4()),
+                "type": "whale",
+                "provider": "prediction",
+                "sport": "whale",
+                "created_at": now.isoformat(),
+                "player1": title,
+                "player2": None,
+                "tournament": f"{emoji} {label}",
+                "market_name": "Polymarket whale",
+                "label": t.get("outcome"),
+                "whale_usd": round(t["usd"]),
+                "whale_side": t["side"],
+                "price": round(t["price"], 3),
+                "telegram_ok": bool(tg.get("ok")),
+                "message": text,
+            })
+            sent += 1
+        self._whale_baselined = True
+        if len(self._whale_seen) > 20000:  # keep the dedup set bounded
+            self._whale_seen = set(list(self._whale_seen)[-8000:])
+        return {"whales": sent}
+
+    def _format_whale_alert(self, t: dict, emoji: str, label: str, title: str) -> str:
+        esc = html.escape
+        side = t.get("side")
+        side_it = {"BUY": "COMPRA", "SELL": "VENDE"}.get(side, str(side))
+        price = t.get("price") or 0.0
+        dec = 1.0 / price if price else 0.0
+        name = str(t.get("name") or "")
+        who = f"\n👤 <code>{esc(name)}</code>" if name else ""
+        return (
+            f"<b>🐋 WHALE Polymarket — {esc(emoji)} {esc(label)}</b>\n"
+            f"{esc(title)}\n"
+            f"<b>{side_it} ${t['usd']:,.0f}</b> su <b>{esc(str(t.get('outcome') or ''))}</b> "
+            f"@ {price:.3f} (quota {dec:.2f}){who}"
+        )

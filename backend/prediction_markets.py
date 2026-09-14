@@ -122,6 +122,28 @@ def _market_liquidity(m: dict) -> float:
     except (TypeError, ValueError):
         return 0.0
 
+
+# ---- Whale monitor -------------------------------------------------------
+# Detect large single trades ("whales") on Polymarket via the keyless Data API,
+# which supports a server-side cash-size filter so one call returns only the big
+# recent trades platform-wide; we then keep those whose market belongs to a sport
+# we watch (matched by conditionId against a cached tag->market map).
+_DATA_TRADES = "https://data-api.polymarket.com/trades"
+WHALE_MIN_USD = float(os.environ.get("WHALE_MIN_USD", "10000"))
+# Polymarket tag slugs whose markets we watch for whale trades: the user's
+# Pinnacle sports (football/tennis/basket) + the prediction sports + outrights.
+WHALE_TAGS = ["soccer", "champions-league", "epl", "la-liga", "serie-a",
+              "ligue-1", "tennis", "nba", "basketball", "wnba", "f1", "mlb", "golf"]
+# tag slug -> (emoji, label) for the alert.
+_WHALE_TAG_SPORT = {
+    "soccer": ("⚽", "Calcio"), "champions-league": ("⚽", "Calcio"),
+    "epl": ("⚽", "Calcio"), "la-liga": ("⚽", "Calcio"),
+    "serie-a": ("⚽", "Calcio"), "ligue-1": ("⚽", "Calcio"),
+    "tennis": ("🎾", "Tennis"), "nba": ("🏀", "Basket"),
+    "basketball": ("🏀", "Basket"), "wnba": ("🏀", "Basket"),
+    "f1": ("🏎️", "Formula 1"), "mlb": ("⚾", "MLB"), "golf": ("⛳", "Golf"),
+}
+
 # Words too generic to identify a team on their own ("Manchester United" vs
 # "Manchester City" share "manchester"; "City"/"United" match half of England).
 _GENERIC_WORDS = {"city", "united", "fc", "ac", "sc", "real", "athletic",
@@ -433,6 +455,65 @@ class PredictionMarketsClient:
                             "start_epoch": None,  # long-lived: no start / no window
                             "emoji": emoji,
                             "selections": selections})
+        return out
+
+    async def get_whale_condition_map(self, tags=WHALE_TAGS) -> dict:
+        """conditionId -> (emoji, sport_label, market_title) for every market in
+        the watched sports' tags, so a whale trade can be classified by its
+        conditionId. Rebuilt on a slow cadence by the caller (markets change
+        over hours, not seconds)."""
+        condmap: dict[str, tuple] = {}
+        async with _client() as client:
+            for tag in tags:
+                emoji, label = _WHALE_TAG_SPORT.get(tag, ("🐋", "Polymarket"))
+                try:
+                    r = await client.get(_GAMMA_EVENTS, params={
+                        "limit": 200, "active": "true", "closed": "false",
+                        "tag_slug": tag})
+                    events = r.json() if r.status_code == 200 else []
+                except Exception as e:
+                    logger.warning("whale condmap tag=%s failed: %s", tag, e)
+                    continue
+                for e in events if isinstance(events, list) else []:
+                    ev_title = str(e.get("title") or "")
+                    for m in e.get("markets") or []:
+                        cid = m.get("conditionId")
+                        if cid and cid not in condmap:
+                            title = str(m.get("question") or ev_title)
+                            condmap[cid] = (emoji, label, title)
+        return condmap
+
+    async def get_whale_trades(self, min_usd: float, limit: int = 100) -> list[dict]:
+        """Recent platform-wide trades >= min_usd notional (Data API server-side
+        CASH filter). Caller matches them to watched markets by conditionId."""
+        async with _client() as client:
+            try:
+                r = await client.get(_DATA_TRADES, params={
+                    "filterType": "CASH", "filterAmount": int(min_usd),
+                    "takerOnly": "true", "limit": limit})
+                data = r.json() if r.status_code == 200 else []
+            except Exception as e:
+                logger.warning("whale trades fetch failed: %s", e)
+                return []
+        out: list[dict] = []
+        for t in data if isinstance(data, list) else []:
+            try:
+                size = float(t.get("size") or 0)
+                price = float(t.get("price") or 0)
+            except (TypeError, ValueError):
+                continue
+            out.append({
+                "tx": t.get("transactionHash"),
+                "cond": t.get("conditionId"),
+                "side": str(t.get("side") or "").upper(),
+                "outcome": t.get("outcome"),
+                "price": price,
+                "size": size,
+                "usd": size * price,
+                "title": str(t.get("title") or ""),
+                "name": t.get("name") or t.get("pseudonym") or "",
+                "ts": t.get("timestamp"),
+            })
         return out
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int,
