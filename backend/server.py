@@ -124,6 +124,7 @@ class SettingsIn(BaseModel):
     mlb_enabled: bool | None = None
     outright_enabled: bool | None = None
     whale_enabled: bool | None = None
+    whale_min_usd: float | None = Field(default=None, ge=0.0)
     provider: str | None = None
     football_provider: str | None = None
     telegram_token: str | None = None
@@ -144,6 +145,7 @@ class SettingsOut(BaseModel):
     mlb_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
+    whale_min_usd: float
     provider: str
     football_provider: str
     providers: list[str]
@@ -310,6 +312,7 @@ def _settings_out() -> SettingsOut:
         mlb_enabled=monitor.mlb_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
+        whale_min_usd=monitor.whale_min_usd,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
         # 'prediction' is not a tennis odds provider (F1/MLB only) and
@@ -343,6 +346,7 @@ async def update_settings(body: SettingsIn):
         mlb_enabled=body.mlb_enabled,
         outright_enabled=body.outright_enabled,
         whale_enabled=body.whale_enabled,
+        whale_min_usd=body.whale_min_usd,
         provider=body.provider,
         football_provider=body.football_provider,
         telegram_token=body.telegram_token,

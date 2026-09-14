@@ -232,6 +232,7 @@ class TennisMonitor:
         self.outright_enabled = True
         self._last_outright_scan: datetime | None = None
         self.whale_enabled = True
+        self.whale_min_usd = pmk.WHALE_MIN_USD  # env seed; dashboard-adjustable
         self._whale_seen: set[str] = set()
         self._whale_baselined = False
         self._whale_condmap: dict[str, tuple] = {}
@@ -282,6 +283,8 @@ class TennisMonitor:
                 self.outright_enabled = bool(cfg["outright_enabled"])
             if "whale_enabled" in cfg:
                 self.whale_enabled = bool(cfg["whale_enabled"])
+            if "whale_min_usd" in cfg:
+                self.whale_min_usd = float(cfg["whale_min_usd"])
             if cfg.get("provider") in self.clients:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in self.clients:
@@ -335,6 +338,7 @@ class TennisMonitor:
                             mlb_enabled: bool | None = None,
                             outright_enabled: bool | None = None,
                             whale_enabled: bool | None = None,
+                            whale_min_usd: float | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
                             telegram_token: str | None = None,
@@ -375,6 +379,9 @@ class TennisMonitor:
         if whale_enabled is not None:
             self.whale_enabled = bool(whale_enabled)
             update["whale_enabled"] = self.whale_enabled
+        if whale_min_usd is not None:
+            self.whale_min_usd = float(whale_min_usd)
+            update["whale_min_usd"] = self.whale_min_usd
         if provider is not None:
             if provider not in self.clients:
                 raise ValueError(f"unknown provider: {provider}")
@@ -1053,7 +1060,7 @@ class TennisMonitor:
             except Exception as e:
                 logger.warning("whale condmap refresh failed: %s", e)
         try:
-            trades = await pred.get_whale_trades(pmk.WHALE_MIN_USD)
+            trades = await pred.get_whale_trades(self.whale_min_usd)
         except Exception as e:
             logger.warning("whale scan failed: %s", e)
             return {"whales": 0, "error": str(e)}

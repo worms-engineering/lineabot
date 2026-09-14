@@ -129,7 +129,9 @@ def _market_liquidity(m: dict) -> float:
 # recent trades platform-wide; we then keep those whose market belongs to a sport
 # we watch (matched by conditionId against a cached tag->market map).
 _DATA_TRADES = "https://data-api.polymarket.com/trades"
-WHALE_MIN_USD = float(os.environ.get("WHALE_MIN_USD", "10000"))
+# Initial seed only; the live threshold lives on the monitor (whale_min_usd) and
+# is adjustable from the dashboard. Env var is the default until one is saved.
+WHALE_MIN_USD = float(os.environ.get("WHALE_MIN_USD", "25000"))
 # Polymarket tag slugs whose markets we watch for whale trades: the user's
 # Pinnacle sports (football/tennis/basket) + the prediction sports + outrights.
 WHALE_TAGS = ["soccer", "champions-league", "epl", "la-liga", "serie-a",

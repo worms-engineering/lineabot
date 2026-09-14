@@ -904,12 +904,14 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const [chatId, setChatId] = useState("");
   const [oddspapiKey, setOddspapiKey] = useState("");
   const [theoddsapiKey, setTheoddsapiKey] = useState("");
+  const [whaleUsd, setWhaleUsd] = useState(25000);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (settings && open) {
       setDrop(Math.round((settings.drop_threshold ?? 0.05) * 1000) / 10);
       setFootballDrop(Math.round((settings.football_drop_threshold ?? 0.05) * 1000) / 10);
+      setWhaleUsd(Math.round(settings.whale_min_usd ?? 25000));
     }
   }, [settings, open]);
 
@@ -917,6 +919,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
     setSaving(true);
     try {
       const body = { drop_threshold: drop / 100, football_drop_threshold: footballDrop / 100 };
+      if (Number.isFinite(whaleUsd) && whaleUsd > 0) body.whale_min_usd = whaleUsd;
       if (token) body.telegram_token = token;
       if (chatId) body.telegram_chat_id = chatId;
       if (oddspapiKey.trim()) body.oddspapi_api_key = oddspapiKey.trim();
@@ -972,6 +975,23 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
             </div>
             <Slider data-testid="settings-football-drop-slider" min={1} max={15} step={0.5} value={[footballDrop]} onValueChange={(v) => setFootballDrop(v[0])} />
             <div className="text-[10px] text-zinc-600 mt-2">Soglia separata per il calcio: alzala se arrivano troppi alert.</div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs uppercase tracking-widest text-zinc-400">
+              <span>🐋 Soglia whale</span>
+              <span className="font-mono text-white">${whaleUsd.toLocaleString()}</span>
+            </div>
+            <Input
+              type="number"
+              min={1000}
+              step={1000}
+              data-testid="settings-whale-usd"
+              value={whaleUsd}
+              onChange={e => setWhaleUsd(Number(e.target.value))}
+              className="rounded-none bg-[#0A0A0A] border-white/20 font-mono"
+            />
+            <div className="text-[10px] text-zinc-600">Ordine minimo (in $) su Polymarket per far scattare un alert whale. Alza il valore se arrivano troppi alert.</div>
           </div>
 
           <div className="space-y-2">
