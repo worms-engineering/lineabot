@@ -754,8 +754,21 @@ class TennisMonitor:
                 if is_drop:
                     drops_found += 1
                     ctx = await self._alert_market_context(match, sel, sport)
+                    # Current prices of the OTHER outcomes of the same market
+                    # (e.g. the 1 and X when the 2 dropped, or the Under when the
+                    # Over dropped) - same market_key and point, different outcome.
+                    siblings = [
+                        {"outcome": s.get("outcome"), "label": s.get("label"),
+                         "price": s.get("price")}
+                        for s in (match.get("selections") or [])
+                        if s.get("market_key") == sel.get("market_key")
+                        and s.get("point") == sel.get("point")
+                        and s.get("outcome") != sel.get("outcome")
+                        and s.get("price")
+                    ]
                     text = self._format_drop_alert(match, sel, prev_price, curr,
-                                                   drop_last, drop_from_open, ctx)
+                                                   drop_last, drop_from_open, ctx,
+                                                   siblings)
                     tg_result = {"ok": False}
                     if not dry_run_notify:
                         try:
@@ -981,7 +994,8 @@ class TennisMonitor:
 
     def _format_drop_alert(self, match: dict, sel: dict, prev_price: float,
                            curr: float, drop_last: float, drop_from_open: float,
-                           ctx: dict | None = None) -> str:
+                           ctx: dict | None = None,
+                           siblings: list[dict] | None = None) -> str:
         start_ts = match.get("start_epoch")
         start_str = ""
         if start_ts:
@@ -1039,6 +1053,15 @@ class TennisMonitor:
             lines.append(comp_line)
         lines.append(f"{esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>")
         lines.append(move_line)
+        # Current prices of the market's other outcomes (1/X/2 for h2h, the
+        # over/under twin for totals) so the whole market is visible at a glance.
+        if siblings:
+            code = {"home": "1", "draw": "X", "away": "2"}
+            parts = []
+            for s in siblings:
+                tag = code.get(s.get("outcome")) or str(s.get("label") or "")
+                parts.append(f"{esc(tag)} <b>{s['price']:.2f}</b>")
+            lines.append("📊 Altre quote: " + " · ".join(parts))
         lines.append(f"da apertura: -{drop_from_open * 100:.1f}%{extra}")
         return "\n".join(lines)
 
