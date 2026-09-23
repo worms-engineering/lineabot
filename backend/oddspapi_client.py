@@ -37,14 +37,21 @@ _MAX_RETRIES = 5
 
 # The fixture list (which matches are in the window) changes slowly, but ODDS
 # change scan to scan. Cache /fixtures per sport for this long and re-fetch odds
-# every scan: at a short REFRESH_MINUTES this collapses several /fixtures calls
-# into one (the single biggest OddsPapi cost). To stay covered while cached, the
+# every scan, so the quota goes to fresh prices instead of re-reading a schedule
+# that hasn't changed. The TTL must be well ABOVE the scan interval: at the old
+# 600s with REFRESH_MINUTES=10 the entry was ~always expired by the next scan
+# and every scan paid one /fixtures per sport. To stay covered while cached, the
 # fetch reaches WINDOW + TTL + margin ahead, and each scan re-filters the cached
-# list to the live window. Trade-off: a newly-listed fixture can appear up to TTL
-# late (still 45+ min of lead), and a provider start-time shift is seen up to TTL
-# late (the alert-time freshness gate keeps that safe). 0 disables the cache.
-FIXTURES_CACHE_TTL = float(os.environ.get("FIXTURES_CACHE_TTL", "600"))
+# list to the live window. Trade-off: a fixture first listed less than TTL
+# before its window can appear late (fixtures are normally listed days ahead),
+# and a start-time shift is seen up to TTL late (the alert-time freshness gate
+# keeps that safe). 0 disables the cache.
+FIXTURES_CACHE_TTL = float(os.environ.get("FIXTURES_CACHE_TTL", "1800"))
 _FIXTURES_FETCH_MARGIN = 300  # seconds of extra horizon beyond WINDOW + TTL
+# Once the quota is exhausted, further calls with the SAME key only burn time
+# (1s pacing each) and return the same 429: skip them until the key changes
+# (dashboard) or this long has passed (re-probe in case the quota reset).
+QUOTA_RECHECK_SECONDS = 60 * 60
 
 SHARP_BOOK = "pinnacle"
 # Whole-match total-line band per sport, used to isolate the real main total
@@ -225,6 +232,9 @@ class OddsPapiClient:
         self.requests_remaining: int | None = None  # OddsPapi has no quota header
         self.quota_exhausted = False
         self.ip_blocked = False
+        # Key + time the quota ran out, for the skip-until-new-key short-circuit.
+        self._exhausted_key: str | None = None
+        self._exhausted_at = 0.0
         # sportId -> (monotonic fetch time, fixtures list) for the /fixtures cache.
         self._fixtures_cache: dict[int, tuple[float, list[dict]]] = {}
 
@@ -237,9 +247,17 @@ class OddsPapiClient:
             await asyncio.sleep(wait)
         self._next_request_at = time.monotonic() + _MIN_REQUEST_INTERVAL
 
+    def _mark_exhausted(self):
+        self.quota_exhausted = True
+        self._exhausted_key = self.api_key
+        self._exhausted_at = time.monotonic()
+
     async def _get(self, path: str, params: dict) -> Any:
         if not self.api_key:
             raise RuntimeError("OddsPapi key not configured (ODDSPAPI_KEY)")
+        if (self.quota_exhausted and self.api_key == self._exhausted_key
+                and time.monotonic() - self._exhausted_at < QUOTA_RECHECK_SECONDS):
+            raise RuntimeError("OddsPapi quota exhausted - skipped until a new key is set")
         params = {**params, "apiKey": self.api_key}
         url = f"{BASE_URL}{path}"
         for attempt in range(_MAX_RETRIES + 1):
@@ -262,7 +280,7 @@ class OddsPapiClient:
                 except Exception:
                     code = None
                 if code == "REQUEST_LIMIT_EXCEEDED":
-                    self.quota_exhausted = True
+                    self._mark_exhausted()
                     raise RuntimeError(f"OddsPapi quota exhausted on {path}: request limit reached")
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(self._retry_delay(resp))
@@ -272,7 +290,7 @@ class OddsPapiClient:
             if isinstance(data, dict) and "error" in data:
                 err = data["error"] or {}
                 if err.get("code") == "REQUEST_LIMIT_EXCEEDED":
-                    self.quota_exhausted = True
+                    self._mark_exhausted()
                 raise RuntimeError(f"OddsPapi v4 error on {path}: "
                                    f"{err.get('message')} ({err.get('code')})")
             self.quota_exhausted = False
@@ -361,7 +379,14 @@ class OddsPapiClient:
         # below re-filters to the caller's exact [start_epoch, end_epoch].
         fetch_to = end_epoch + int(FIXTURES_CACHE_TTL) + _FIXTURES_FETCH_MARGIN
         for fx in await self._get_fixtures_cached(sport_id, start_epoch, fetch_to):
-            if not fx.get("hasOdds") or not _is_real_event(fx):
+            if not _is_real_event(fx):
+                continue
+            # hasOdds comes from the (up to TTL old) cached list, and Pinnacle
+            # opens some markets only near start (volleyball) - so for curated
+            # whitelisted competitions don't trust a stale "no odds" and let the
+            # live odds call decide. Open sports (tennis/hockey, huge calendars)
+            # keep the filter so odds-less minor events don't cost extra calls.
+            if not fx.get("hasOdds") and not tournament_filter:
                 continue
             # statusId (id-feed only): 0=prelive, 1=live, 2=ended. The pn
             # (same-day) feed never sets it - those are handled downstream

@@ -139,6 +139,10 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 - `CORS_ORIGINS` — l'URL Vercel del frontend (es. `https://your-app.vercel.app`)
 - `REFRESH_MINUTES` — minuti tra gli scan automatici (default 10)
+- `F1_REFRESH_SECONDS` — secondi tra i fast-scan dei prediction market F1/MLB (default 60, gratuito)
+- `WHALE_REFRESH_SECONDS` — secondi tra i poll del whale monitor Polymarket (default 30, gratuito)
+- `FIXTURES_CACHE_TTL` — secondi di cache del calendario OddsPapi (default 1800); le quote
+  vengono comunque rilette a ogni scan, così la quota va sui prezzi e non sul calendario
 
 ### ⚠️ CPU sempre allocata e min-instances (fondamentale su Cloud Run)
 Lo scheduler (APScheduler) gira **dentro il processo web**, non come job separato. Cloud Run

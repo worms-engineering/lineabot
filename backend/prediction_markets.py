@@ -60,6 +60,56 @@ async def _close_http() -> None:
         await _HTTP.aclose()
     _HTTP = None
 
+
+# Gamma /events silently caps a page at 100 events whatever `limit` asks for,
+# so a single request only ever saw the first 100 events of a tag - e.g. ~100 of
+# the ~330 open MLB events, missing most games in the window. Every read now
+# pages with offset (the API refuses offsets past ~2000, hence the page cap).
+_GAMMA_PAGE = 100
+_GAMMA_MAX_PAGES = 10
+
+
+async def _gamma_events(tag: str, max_pages: int = _GAMMA_MAX_PAGES,
+                        **filters) -> list[dict]:
+    """All open events of a Polymarket tag, paginated. Extra `filters` go
+    straight to the query (e.g. start_time_min/start_time_max to fetch only the
+    games starting in a window). Raises on transport errors; a non-200 page
+    ends the read with what was collected so far."""
+    out: list[dict] = []
+    client = _get_http()
+    for page in range(max_pages):
+        r = await client.get(_GAMMA_EVENTS, params={
+            "limit": _GAMMA_PAGE, "offset": page * _GAMMA_PAGE,
+            "active": "true", "closed": "false", "tag_slug": tag, **filters})
+        if r.status_code != 200:
+            logger.warning("gamma events tag=%s page=%d -> HTTP %s", tag, page, r.status_code)
+            break
+        events = r.json()
+        if not isinstance(events, list):
+            break
+        out.extend(events)
+        if len(events) < _GAMMA_PAGE:
+            break
+    return out
+
+
+# Short per-tag cache for the alert-time cross-check only: several alerts in
+# one scan (or a burst of scans) share one read of a tag. Never used for the
+# prices that are tracked for drops - those are always read live.
+_XCHECK_CACHE_TTL = 60.0
+_xcheck_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+async def _gamma_events_xcheck(tag: str) -> list[dict]:
+    now = asyncio.get_running_loop().time()
+    hit = _xcheck_cache.get(tag)
+    if hit is not None and now - hit[0] < _XCHECK_CACHE_TTL:
+        return hit[1]
+    events = await _gamma_events(tag, max_pages=5)
+    _xcheck_cache[tag] = (now, events)
+    return events
+
+
 # sport -> Polymarket tag slugs carrying game moneylines.
 POLYMARKET_TAGS = {
     "basketball": ["nba", "wnba"],
@@ -134,13 +184,20 @@ _DATA_TRADES = "https://data-api.polymarket.com/trades"
 WHALE_MIN_USD = float(os.environ.get("WHALE_MIN_USD", "25000"))
 # Polymarket tag slugs whose markets we watch for whale trades: the user's
 # Pinnacle sports (football/tennis/basket) + the prediction sports + outrights.
-WHALE_TAGS = ["soccer", "champions-league", "epl", "la-liga", "serie-a",
-              "ligue-1", "tennis", "nba", "basketball", "wnba", "f1", "mlb", "golf"]
+# Football uses the per-league tags of the tracked competitions: the catch-all
+# `soccer` tag holds 2000+ open events (~180 MB, past the API's offset cap), so
+# it can't be read in full - and it's mostly leagues we don't track anyway.
+# Slugs verified live against Gamma.
+_FOOTBALL_WHALE_TAGS = [
+    "epl", "la-liga", "serie-a", "bundesliga", "ligue-1", "ere", "primeira-liga",
+    "brazil-serie-a", "arg", "mex", "ucl", "champions-league", "uel",
+    "europa-league", "uefa-conference-league", "europa-conference-league",
+]
+WHALE_TAGS = _FOOTBALL_WHALE_TAGS + ["tennis", "nba", "basketball", "wnba",
+                                     "f1", "mlb", "golf"]
 # tag slug -> (emoji, label) for the alert.
 _WHALE_TAG_SPORT = {
-    "soccer": ("⚽", "Calcio"), "champions-league": ("⚽", "Calcio"),
-    "epl": ("⚽", "Calcio"), "la-liga": ("⚽", "Calcio"),
-    "serie-a": ("⚽", "Calcio"), "ligue-1": ("⚽", "Calcio"),
+    **{t: ("⚽", "Calcio") for t in _FOOTBALL_WHALE_TAGS},
     "tennis": ("🎾", "Tennis"), "nba": ("🏀", "Basket"),
     "basketball": ("🏀", "Basket"), "wnba": ("🏀", "Basket"),
     "f1": ("🏎️", "Formula 1"), "mlb": ("⚾", "MLB"), "golf": ("⛳", "Golf"),
@@ -215,51 +272,46 @@ async def polymarket_price(sport: str, home: str, away: str,
     if not tags or not side:
         return None
     shared = _shared_words(home, away)
-    async with _client() as client:
-        for tag in tags:
-            try:
-                r = await client.get(_GAMMA_EVENTS, params={
-                    "limit": 500, "active": "true", "closed": "false",
-                    "tag_slug": tag,
-                })
-                events = r.json() if r.status_code == 200 else []
-            except Exception:
+    for tag in tags:
+        try:
+            events = await _gamma_events_xcheck(tag)
+        except Exception:
+            continue
+        for e in events:
+            # NB: event.startDate is the LISTING date; the game time is
+            # market.gameStartTime (or event.endDate as fallback). A
+            # time gate is required or stale same-matchup events match.
+            title_teams = [_norm(t) for t in
+                           re.split(r"\s+vs\.?\s+", str(e.get("title") or ""), flags=re.I)]
+            if len(title_teams) != 2:
                 continue
-            for e in events if isinstance(events, list) else []:
-                # NB: event.startDate is the LISTING date; the game time is
-                # market.gameStartTime (or event.endDate as fallback). A
-                # time gate is required or stale same-matchup events match.
-                title_teams = [_norm(t) for t in
-                               re.split(r"\s+vs\.?\s+", str(e.get("title") or ""), flags=re.I)]
-                if len(title_teams) != 2:
+            if not (_same_team(title_teams[0], home, shared) and _same_team(title_teams[1], away, shared)) \
+                    and not (_same_team(title_teams[0], away, shared) and _same_team(title_teams[1], home, shared)):
+                continue
+            for m in e.get("markets") or []:
+                game_ts = (_parse_ts(m.get("gameStartTime"))
+                           or _parse_ts(m.get("closeTime"))
+                           or _parse_ts(e.get("endDate")))
+                if game_ts is None or abs(game_ts - start_epoch) > 36 * 3600:
                     continue
-                if not (_same_team(title_teams[0], home, shared) and _same_team(title_teams[1], away, shared)) \
-                        and not (_same_team(title_teams[0], away, shared) and _same_team(title_teams[1], home, shared)):
+                try:
+                    outcomes = m.get("outcomes")
+                    if isinstance(outcomes, str):
+                        outcomes = json.loads(outcomes)
+                    prices = m.get("outcomePrices")
+                    if isinstance(prices, str):
+                        prices = json.loads(prices)
+                except Exception:
                     continue
-                for m in e.get("markets") or []:
-                    game_ts = (_parse_ts(m.get("gameStartTime"))
-                               or _parse_ts(m.get("closeTime"))
-                               or _parse_ts(e.get("endDate")))
-                    if game_ts is None or abs(game_ts - start_epoch) > 36 * 3600:
-                        continue
-                    try:
-                        outcomes = m.get("outcomes")
-                        if isinstance(outcomes, str):
-                            outcomes = json.loads(outcomes)
-                        prices = m.get("outcomePrices")
-                        if isinstance(prices, str):
-                            prices = json.loads(prices)
-                    except Exception:
-                        continue
-                    if not outcomes or not prices or len(outcomes) != len(prices):
-                        continue
-                    for name, p in zip(outcomes, prices):
-                        if _same_team(name, side, shared):
-                            price = _to_decimal(p)
-                            if price:
-                                logger.info("polymarket %s vs %s: %s @ %s",
-                                            home, away, side, price)
-                            return price
+                if not outcomes or not prices or len(outcomes) != len(prices):
+                    continue
+                for name, p in zip(outcomes, prices):
+                    if _same_team(name, side, shared):
+                        price = _to_decimal(p)
+                        if price:
+                            logger.info("polymarket %s vs %s: %s @ %s",
+                                        home, away, side, price)
+                        return price
     return None
 
 
@@ -383,120 +435,113 @@ class PredictionMarketsClient:
         is unpriced longshots)."""
         out: list[dict] = []
         seen: set = set()
-        async with _client() as client:
-            for src in sources:
-                tag = src["tag"]
-                title_sub = (src.get("title") or "").lower()
-                emoji = src.get("emoji", "🏆")
-                # Per-source liquidity floor (falls back to the global one) so a
-                # noisy category - e.g. golf, where the tag pulls in thin minor
-                # tours - can demand deeper markets than the default.
-                floor = src.get("min_liquidity", OUTRIGHT_MIN_LIQUIDITY)
-                try:
-                    r = await client.get(_GAMMA_EVENTS, params={
-                        "limit": 200, "active": "true", "closed": "false",
-                        "tag_slug": tag})
-                    events = r.json() if r.status_code == 200 else []
-                except Exception as e:
-                    logger.warning("outright fetch tag=%s failed: %s", tag, e)
+        for src in sources:
+            tag = src["tag"]
+            title_sub = (src.get("title") or "").lower()
+            emoji = src.get("emoji", "🏆")
+            # Per-source liquidity floor (falls back to the global one) so a
+            # noisy category - e.g. golf, where the tag pulls in thin minor
+            # tours - can demand deeper markets than the default.
+            floor = src.get("min_liquidity", OUTRIGHT_MIN_LIQUIDITY)
+            try:
+                events = await _gamma_events(tag)
+            except Exception as e:
+                logger.warning("outright fetch tag=%s failed: %s", tag, e)
+                continue
+            for e in events:
+                eid = e.get("id")
+                if eid in seen:
                     continue
-                for e in events if isinstance(events, list) else []:
-                    eid = e.get("id")
-                    if eid in seen:
+                title = str(e.get("title") or "")
+                if title_sub and title_sub not in title.lower():
+                    continue
+                try:
+                    liquidity = float(e.get("liquidity") or 0)
+                except (TypeError, ValueError):
+                    liquidity = 0.0
+                if liquidity < floor:
+                    continue
+                selections: list[dict] = []
+                for m in e.get("markets") or []:
+                    mt = _OUTRIGHT_WIN_Q.match(str(m.get("question") or ""))
+                    if not mt:
                         continue
-                    title = str(e.get("title") or "")
-                    if title_sub and title_sub not in title.lower():
+                    if _market_liquidity(m) < PM_MIN_LIQUIDITY:
+                        continue  # 0-liquidity contender -> unreliable price
+                    try:
+                        outs = m.get("outcomes")
+                        prices = m.get("outcomePrices")
+                        if isinstance(outs, str):
+                            outs = json.loads(outs)
+                        if isinstance(prices, str):
+                            prices = json.loads(prices)
+                    except Exception:
+                        continue
+                    if (not outs or not prices or len(outs) != len(prices)
+                            or str(outs[0]).lower() != "yes"):
                         continue
                     try:
-                        liquidity = float(e.get("liquidity") or 0)
+                        yes = float(prices[0])
                     except (TypeError, ValueError):
-                        liquidity = 0.0
-                    if liquidity < floor:
                         continue
-                    selections: list[dict] = []
-                    for m in e.get("markets") or []:
-                        mt = _OUTRIGHT_WIN_Q.match(str(m.get("question") or ""))
-                        if not mt:
-                            continue
-                        if _market_liquidity(m) < PM_MIN_LIQUIDITY:
-                            continue  # 0-liquidity contender -> unreliable price
-                        try:
-                            outs = m.get("outcomes")
-                            prices = m.get("outcomePrices")
-                            if isinstance(outs, str):
-                                outs = json.loads(outs)
-                            if isinstance(prices, str):
-                                prices = json.loads(prices)
-                        except Exception:
-                            continue
-                        if (not outs or not prices or len(outs) != len(prices)
-                                or str(outs[0]).lower() != "yes"):
-                            continue
-                        try:
-                            yes = float(prices[0])
-                        except (TypeError, ValueError):
-                            continue
-                        if not (OUTRIGHT_PROB_BAND[0] <= yes <= OUTRIGHT_PROB_BAND[1]):
-                            continue
-                        price = _to_decimal(yes)
-                        if not price:
-                            continue
-                        cand = mt.group(1).strip()
-                        if _OUTRIGHT_PLACEHOLDER.match(cand):
-                            continue
-                        selections.append({
-                            "market_key": "outright", "market_name": "Vincitore",
-                            "outcome": cand, "point": None, "label": cand,
-                            "price": price})
-                    if len(selections) >= 2:
-                        seen.add(eid)
-                        out.append({
-                            "match_id": f"pm-outright-{eid}",
-                            "tournament": title,
-                            "player1": None, "player2": None,
-                            "start_epoch": None,  # long-lived: no start / no window
-                            "emoji": emoji,
-                            "selections": selections})
+                    if not (OUTRIGHT_PROB_BAND[0] <= yes <= OUTRIGHT_PROB_BAND[1]):
+                        continue
+                    price = _to_decimal(yes)
+                    if not price:
+                        continue
+                    cand = mt.group(1).strip()
+                    if _OUTRIGHT_PLACEHOLDER.match(cand):
+                        continue
+                    selections.append({
+                        "market_key": "outright", "market_name": "Vincitore",
+                        "outcome": cand, "point": None, "label": cand,
+                        "price": price})
+                if len(selections) >= 2:
+                    seen.add(eid)
+                    out.append({
+                        "match_id": f"pm-outright-{eid}",
+                        "tournament": title,
+                        "player1": None, "player2": None,
+                        "start_epoch": None,  # long-lived: no start / no window
+                        "emoji": emoji,
+                        "selections": selections})
         return out
 
     async def get_whale_condition_map(self, tags=WHALE_TAGS) -> dict:
         """conditionId -> (emoji, sport_label, market_title) for every market in
         the watched sports' tags, so a whale trade can be classified by its
         conditionId. Rebuilt on a slow cadence by the caller (markets change
-        over hours, not seconds)."""
+        over hours, not seconds). Paginated (see _gamma_events): a truncated
+        map silently misses whales on the markets that didn't fit."""
         condmap: dict[str, tuple] = {}
-        async with _client() as client:
-            for tag in tags:
-                emoji, label = _WHALE_TAG_SPORT.get(tag, ("🐋", "Polymarket"))
-                try:
-                    r = await client.get(_GAMMA_EVENTS, params={
-                        "limit": 200, "active": "true", "closed": "false",
-                        "tag_slug": tag})
-                    events = r.json() if r.status_code == 200 else []
-                except Exception as e:
-                    logger.warning("whale condmap tag=%s failed: %s", tag, e)
-                    continue
-                for e in events if isinstance(events, list) else []:
-                    ev_title = str(e.get("title") or "")
-                    for m in e.get("markets") or []:
-                        cid = m.get("conditionId")
-                        if cid and cid not in condmap:
-                            title = str(m.get("question") or ev_title)
-                            condmap[cid] = (emoji, label, title)
+        for tag in tags:
+            emoji, label = _WHALE_TAG_SPORT.get(tag, ("🐋", "Polymarket"))
+            try:
+                events = await _gamma_events(tag)
+            except Exception as e:
+                logger.warning("whale condmap tag=%s failed: %s", tag, e)
+                continue
+            for e in events:
+                ev_title = str(e.get("title") or "")
+                for m in e.get("markets") or []:
+                    cid = m.get("conditionId")
+                    if cid and cid not in condmap:
+                        title = str(m.get("question") or ev_title)
+                        condmap[cid] = (emoji, label, title)
         return condmap
 
     async def get_whale_trades(self, min_usd: float, limit: int = 100) -> list[dict]:
         """Recent platform-wide trades >= min_usd notional (Data API server-side
-        CASH filter). Caller matches them to watched markets by conditionId."""
+        CASH filter). Caller matches them to watched markets by conditionId.
+        Raises on failure (never returns a silent []): the caller's first pass
+        baselines the seen-set, and baselining on an empty failed read would
+        replay up to `limit` old whales as new alerts on the next pass."""
         async with _client() as client:
-            try:
-                r = await client.get(_DATA_TRADES, params={
-                    "filterType": "CASH", "filterAmount": int(min_usd),
-                    "takerOnly": "true", "limit": limit})
-                data = r.json() if r.status_code == 200 else []
-            except Exception as e:
-                logger.warning("whale trades fetch failed: %s", e)
-                return []
+            r = await client.get(_DATA_TRADES, params={
+                "filterType": "CASH", "filterAmount": int(min_usd),
+                "takerOnly": "true", "limit": limit})
+            r.raise_for_status()
+            data = r.json()
         out: list[dict] = []
         for t in data if isinstance(data, list) else []:
             try:
@@ -514,6 +559,7 @@ class PredictionMarketsClient:
                 "usd": size * price,
                 "title": str(t.get("title") or ""),
                 "name": t.get("name") or t.get("pseudonym") or "",
+                "wallet": t.get("proxyWallet") or "",
                 "ts": t.get("timestamp"),
             })
         return out
@@ -525,15 +571,11 @@ class PredictionMarketsClient:
         if sport != "f1":
             return []
         try:
-            async with _client() as client:
-                r = await client.get(_GAMMA_EVENTS, params={
-                    "limit": 500, "active": "true", "closed": "false",
-                    "tag_slug": "f1"})
-                events = r.json() if r.status_code == 200 else []
+            events = await _gamma_events("f1")
         except Exception:
             return []
         out: list[dict] = []
-        for e in events if isinstance(events, list) else []:
+        for e in events:
             title = str(e.get("title") or "")
             gp = title.split(":")[0].strip()
             suffix = title.split(":", 1)[1].strip() if ":" in title else ""
@@ -616,20 +658,29 @@ class PredictionMarketsClient:
         out: list[dict] = []
         for tag in tags:
             try:
-                async with _client() as client:
-                    r = await client.get(_GAMMA_EVENTS, params={
-                        "limit": 500, "active": "true", "closed": "false",
-                        "tag_slug": tag})
-                    events = r.json() if r.status_code == 200 else []
+                # Server-side filter on the event's game start: only the games
+                # starting inside the window (a page or two) instead of the
+                # tag's ~330 open events (season futures, props, ...).
+                events = await _gamma_events(
+                    tag, start_time_min=_iso(start_epoch),
+                    start_time_max=_iso(end_epoch))
             except Exception:
                 continue
-            for e in events if isinstance(events, list) else []:
+            for e in events:
                 # Title is a prefilter only - event titles carry prefixes
                 # ("Dana White's Contender Series: A vs B (Weight)") so the
                 # fighter/team names come from the market outcomes instead.
                 if not re.search(r"\s+vs\.?\s+", str(e.get("title") or ""), re.I):
                     continue
                 for m in e.get("markets") or []:
+                    # Game events also carry spread ("Spread: X (-1.5)", team-name
+                    # outcomes) and totals (Over/Under) markets: only the
+                    # moneyline is the match-winner price. When the moneyline
+                    # was filtered out (thin book) the loop used to fall through
+                    # to one of those and track it as the moneyline.
+                    smt = m.get("sportsMarketType")
+                    if smt and smt != "moneyline":
+                        continue
                     game_ts = (_parse_ts(m.get("gameStartTime"))
                                or _parse_ts(e.get("endDate")))
                     if game_ts is None or not (start_epoch < game_ts <= end_epoch):
@@ -645,8 +696,8 @@ class PredictionMarketsClient:
                         continue
                     if (not outcomes or not prices
                             or len(outcomes) != 2 or len(prices) != 2
-                            or outcomes[0].lower() in ("yes", "no")
-                            or outcomes[1].lower() in ("yes", "no")):
+                            or outcomes[0].lower() in ("yes", "no", "over", "under")
+                            or outcomes[1].lower() in ("yes", "no", "over", "under")):
                         continue
                     if _market_liquidity(m) < PM_MIN_LIQUIDITY:
                         continue  # no order book -> price untradeable/unreliable

@@ -43,8 +43,18 @@ LINE_STATE_TTL_SECONDS = 6 * 60 * 60
 # prediction-market loop (a doc/minute) can't grow it without bound.
 SCANS_TTL_SECONDS = 7 * 24 * 60 * 60
 # Whale monitor: rebuild the (large, slow-changing) conditionId->sport map at
-# most this often; the whale trade feed itself is polled every scan.
-WHALE_CONDMAP_TTL_SECONDS = 10 * 60
+# most this often; the whale trade feed itself is polled every scan. Game
+# markets are listed days ahead, so 30 min loses nothing and keeps the (fully
+# paginated, ~30-request) rebuild off most polls.
+WHALE_CONDMAP_TTL_SECONDS = 30 * 60
+# Ignore whale trades older than this when they first show up in the feed.
+WHALE_MAX_AGE_SECONDS = 15 * 60
+# Follow-up fills by the same wallet/market/side within this window update the
+# original whale alert instead of sending a new one.
+WHALE_AGG_SECONDS = 15 * 60
+# Drop alerts are sent before the cross-checks; the cross-checks then have this
+# long to come back and be edited into the message.
+ALERT_CONTEXT_TIMEOUT = 20
 
 # Minimum time between auto key-rotation attempts, so a broken generator
 # (site down, signup captcha...) doesn't get hammered every scan.
@@ -166,7 +176,7 @@ OUTRIGHT_MARKETS = [
     {"emoji": "⚽", "tag": "la-liga", "title": "champion"},
     {"emoji": "⚽", "tag": "serie-a", "title": "champion"},
     {"emoji": "⚽", "tag": "ligue-1", "title": "champion"},
-    {"emoji": "🏆", "tag": "soccer", "title": "ballon"},   # Pallone d'Oro
+    {"emoji": "🏆", "tag": "awards", "title": "ballon"},   # Pallone d'Oro
     {"emoji": "🎾", "tag": "tennis", "title": "winner"},    # Slam winners
     # Golf: the tag pulls in thin minor tours (LPGA/DP World secondary events)
     # that flooded alerts - require a deeper book so only majors + flagship
@@ -233,11 +243,25 @@ class TennisMonitor:
         self._last_outright_scan: datetime | None = None
         self.whale_enabled = True
         self.whale_min_usd = pmk.WHALE_MIN_USD  # env seed; dashboard-adjustable
-        self._whale_seen: set[str] = set()
+        # tx hash -> None; a dict keeps insertion order so trimming keeps the
+        # newest hashes (a set trimmed "arbitrarily" could re-alert recent ones).
+        self._whale_seen: dict[str, None] = {}
+        self._whale_aggs: dict[tuple, dict] = {}
         self._whale_baselined = False
         self._whale_condmap: dict[str, tuple] = {}
         self._whale_condmap_at: datetime | None = None
+        # Main scan and fast (prediction-market) loop have separate locks: the
+        # main OddsPapi scan is rate-limited to ~1 req/s and can run for tens of
+        # seconds, and it must not hold up the fast loop. They never touch the
+        # same sports (the main scan delegates `fast_loop_sports`), so their
+        # line_state rows and snapshot fields are disjoint.
         self._lock = asyncio.Lock()
+        self._fast_lock = asyncio.Lock()
+        # Sports scanned by the fast loop (set by the server when it schedules
+        # it); the main scan skips them instead of scanning them twice.
+        self.fast_loop_sports: tuple[str, ...] = ()
+        # Bound concurrent Telegram sends when several drops fire at once.
+        self._send_sem = asyncio.Semaphore(4)
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
         self.last_scan_stats: dict[str, Any] = {}
@@ -257,6 +281,7 @@ class TennisMonitor:
     async def close(self):
         for c in self.clients.values():
             await c.close()
+        await self.telegram.close()
 
     async def load_settings(self):
         cfg = await self.db.settings.find_one({"_id": "config"})
@@ -400,9 +425,13 @@ class TennisMonitor:
             update["telegram_chat_id"] = telegram_chat_id
         if oddspapi_api_key is not None:
             self.clients["oddspapi"].api_key = oddspapi_api_key
+            self.clients["oddspapi"].quota_exhausted = False
+            self._quota_alerted.discard("oddspapi")
             update["oddspapi_api_key"] = oddspapi_api_key
         if theoddsapi_api_key is not None:
             self.clients["theoddsapi"].api_key = theoddsapi_api_key
+            self.clients["theoddsapi"].quota_exhausted = False
+            self._quota_alerted.discard("theoddsapi")
             update["theoddsapi_api_key"] = theoddsapi_api_key
         if update:
             await self.db.settings.update_one(
@@ -474,7 +503,7 @@ class TennisMonitor:
         loop); partial scans merge into the snapshot and don't clobber the
         main scan's status/stats so the dashboard keeps showing the full
         picture."""
-        async with self._lock:
+        async with (self._lock if sports is None else self._fast_lock):
             started = _now()
             if not self.tracking_enabled and not force:
                 if update_state:
@@ -544,28 +573,45 @@ class TennisMonitor:
             plan.append(("mlb", "prediction", None))
         return plan
 
+    def sport_enabled(self, sport: str) -> bool:
+        """Whether a sport's matches belong on the dashboard right now (tennis
+        is always scanned; every other sport has a `<sport>_enabled` toggle)."""
+        if sport == "tennis":
+            return True
+        return bool(getattr(self, f"{sport}_enabled", True))
+
     async def _scan_impl(self, dry_run_notify: bool,
                          sports: tuple[str, ...] | None = None) -> dict:
+        """Fetch -> evaluate -> alert, one sport at a time: a sport's drop
+        alerts go out as soon as ITS odds are in (as background tasks), instead
+        of waiting for every other sport of the scan to be fetched first. The
+        tasks are awaited at the end only to count them."""
         now_dt = _now()
         now_ts = int(now_dt.timestamp())
         window_start = now_ts + MIN_LEAD_SECONDS  # skip matches about to start
         end_ts = now_ts + WINDOW_SECONDS
 
-        matches: list[dict] = []
         sport_errors: dict[str, str] = {}
+        alert_tasks: list[asyncio.Task] = []
+        totals = {"fixtures": 0, "selections": 0, "drops": 0}
+        # Sports owned by the fast loop are left to it: re-scanning them here
+        # only duplicated its requests and lengthened this (slower) scan.
+        delegated = self.fast_loop_sports if sports is None else ()
+
         for sport, prov, whitelist in self._scan_plan():
             if sports is not None and sport not in sports:
+                continue
+            if sport in delegated:
                 continue
             client = self.clients[prov]
             # Every sport - prediction markets (F1/MLB) included - uses the same
             # 60-minute pre-match window: only events starting within the hour
-            # are tracked. (Prediction sports still scan on the fast loop, so an
+            # are tracked. (Prediction sports scan on the fast loop, so an
             # imminent race/game is polled every F1_REFRESH_SECONDS rather than
             # once per REFRESH_MINUTES.)
-            sport_ws, sport_we = window_start, end_ts
             raw: list[dict] | None = None
             try:
-                raw = await client.get_pinnacle_matches(sport, sport_ws, sport_we, whitelist)
+                raw = await client.get_pinnacle_matches(sport, window_start, end_ts, whitelist)
             except Exception as e:
                 logger.warning("scan sport=%s provider=%s failed: %s", sport, prov, e)
                 sport_errors[sport] = str(e)
@@ -582,19 +628,17 @@ class TennisMonitor:
                     await self._notify_ip_blocked(prov)
             else:
                 self._ipblock_alerted.discard(prov)
-            if raw is None:
-                continue
-            for m in raw:
+            for m in raw or []:
                 m["sport"] = sport
                 m["provider"] = prov
-                matches.append(m)
+            await self._process_sport(sport, raw or [], now_dt, dry_run_notify,
+                                      alert_tasks, totals)
 
         # Outrights (Polymarket): main loop only, no 60-minute window - tracked
-        # from market open to close. Merged into the same drop-detection pipeline
-        # as everything else (one selection per contender). Refreshed on their own
-        # slow cadence (they barely move intraday); on cycles where we skip the
-        # fetch, the previous outright snapshot is carried forward below.
-        scanned_outright = False
+        # from market open to close. Same drop-detection pipeline as everything
+        # else (one selection per contender), refreshed on their own slow
+        # cadence (they barely move intraday); between refreshes the previous
+        # outright snapshot simply stays in place.
         if self.outright_enabled and (sports is None or "outright" in sports):
             due = (self._last_outright_scan is None or
                    (now_dt - self._last_outright_scan).total_seconds() >= OUTRIGHT_REFRESH_SECONDS)
@@ -604,37 +648,85 @@ class TennisMonitor:
                     for m in raw:
                         m["sport"] = "outright"
                         m["provider"] = "prediction"
-                        matches.append(m)
                     self._last_outright_scan = now_dt
-                    scanned_outright = True
+                    await self._process_sport("outright", raw, now_dt, dry_run_notify,
+                                              alert_tasks, totals)
                 except Exception as e:
                     logger.warning("outright scan failed: %s", e)
                     sport_errors["outright"] = str(e)
 
-        matches_payload: list[dict] = []
-        drops_found = 0
         alerts_sent = 0
+        if alert_tasks:
+            results = await asyncio.gather(*alert_tasks, return_exceptions=True)
+            alerts_sent = sum(1 for r in results if r is True)
 
+        cutoff = (now_dt - timedelta(seconds=LINE_STATE_TTL_SECONDS)).isoformat()
+        try:
+            await self.db.line_state.delete_many({"updated_at": {"$lt": cutoff}})
+        except Exception:
+            logger.debug("line_state prune skipped")
+
+        # Scan-level metadata. Matches themselves live per sport under
+        # `by_sport` (written by _process_sport as each sport completes), so the
+        # main and fast loops never read-modify-write each other's matches; the
+        # legacy flat `matches` array is dropped.
+        await self.db.snapshots.update_one(
+            {"_id": "latest"},
+            {"$set": {
+                "updated_at": now_dt.isoformat(),
+                "provider": self.provider,
+                "basketball_enabled": self.basketball_enabled,
+                "football_enabled": self.football_enabled,
+                "football_provider": self.football_provider,
+                "f1_enabled": self.f1_enabled,
+                "mlb_enabled": self.mlb_enabled,
+                "hockey_enabled": self.hockey_enabled,
+                "volley_enabled": self.volley_enabled,
+                "outright_enabled": self.outright_enabled,
+                "drop_threshold": self.drop_threshold,
+                "football_drop_threshold": self.football_drop_threshold,
+                "tracking_enabled": self.tracking_enabled,
+            }, "$unset": {"matches": ""}},
+            upsert=True,
+        )
+
+        stats = {
+            "provider": self.provider,
+            "fixtures_tracked": totals["fixtures"],
+            "selections_tracked": totals["selections"],
+            "drops_found": totals["drops"],
+            "alerts_sent": alerts_sent,
+            "requests_remaining": self.client.requests_remaining,
+        }
+        if sport_errors:
+            stats["sport_errors"] = sport_errors
+        return stats
+
+    async def _process_sport(self, sport: str, matches: list[dict], now_dt: datetime,
+                             dry_run_notify: bool, alert_tasks: list,
+                             totals: dict) -> None:
+        """Evaluate one sport's fresh prices against line_state, launch its drop
+        alerts immediately, persist the new line state and publish the sport's
+        dashboard rows."""
+        now_ts = int(now_dt.timestamp())
         # Pre-pass: filter out started matches and pre-compute every
-        # line_state key, so the whole scan's previous state can be read in a
-        # single query instead of one find_one per selection (a busy tennis
-        # scan is easily 50+ fixtures x 4 selections = 200 sequential, latency-
-        # bound round-trips otherwise). Updates are likewise batched into one
-        # bulk_write at the end.
+        # line_state key, so the sport's previous state is read in a single
+        # query instead of one find_one per selection (a busy tennis scan is
+        # easily 50+ fixtures x 4 selections = 200 sequential, latency-bound
+        # round-trips otherwise). Updates are likewise batched into one
+        # bulk_write.
         plan_items: list[dict] = []
         all_keys: list[str] = []
         for match in matches:
             start_epoch = match.get("start_epoch")
             if start_epoch is not None and start_epoch <= now_ts:
-                # Match already underway: the 90s fetch-time lead is not
-                # enough on its own - scans take 10-30s (rate-limited) and
-                # OddsPapi shifts startTime on delays, which can push a
-                # started fixture back into the window with a minutes-old
-                # baseline. In-play prices would read as huge "drops", so
-                # don't track or alert on it at all.
+                # Match already underway: scans take 10-30s (rate-limited) and
+                # OddsPapi shifts startTime on delays, which can push a started
+                # fixture back into the window with a minutes-old baseline.
+                # In-play prices would read as huge "drops", so don't track or
+                # alert on it at all.
                 continue
             provider = match.get("provider", self.provider)
-            sport = match.get("sport", "tennis")
             threshold = self.football_drop_threshold if sport == "football" else self.drop_threshold
             match_id = match.get("match_id")
             sels: list[tuple[dict, str]] = []
@@ -642,7 +734,7 @@ class TennisMonitor:
                 key = _line_key(provider, sport, match_id, sel)
                 sels.append((sel, key))
                 all_keys.append(key)
-            plan_items.append({"match": match, "provider": provider, "sport": sport,
+            plan_items.append({"match": match, "provider": provider,
                                "threshold": threshold, "match_id": match_id, "sels": sels})
 
         prev_states: dict[str, dict] = {}
@@ -650,13 +742,13 @@ class TennisMonitor:
             async for doc in self.db.line_state.find({"_id": {"$in": all_keys}}):
                 prev_states[doc["_id"]] = doc
         line_ops: list[UpdateOne] = []
+        matches_payload: list[dict] = []
 
         for item in plan_items:
             match = item["match"]
             match_id = item["match_id"]
             start_epoch = match.get("start_epoch")
             provider = item["provider"]
-            sport = item["sport"]
             threshold = item["threshold"]
             line_rows: list[dict] = []
             for sel, key in item["sels"]:
@@ -725,10 +817,9 @@ class TennisMonitor:
                     is_drop = True
 
                 # Final freshness gate against a LIVE clock. The pre-pass filters
-                # on now_ts captured at scan start, but a rate-limited scan takes
-                # 10-30s and sends earlier alerts before reaching this one, and
-                # providers lag/shift start times - so a match can cross its start
-                # (or fall inside the lead) between the pre-pass and now. Require
+                # on the scan-start clock, but a rate-limited scan takes 10-30s
+                # and providers lag/shift start times - so a match can cross its
+                # start (or fall inside the lead) meanwhile. Require
                 # MIN_LEAD_SECONDS of real lead at this instant or drop the alert:
                 # this is what stops alerts on already-started matches. (Outrights
                 # have no start_epoch and are exempt.)
@@ -752,8 +843,7 @@ class TennisMonitor:
                 ))
 
                 if is_drop:
-                    drops_found += 1
-                    ctx = await self._alert_market_context(match, sel, sport)
+                    totals["drops"] += 1
                     # Current prices of the OTHER outcomes of the same market
                     # (e.g. the 1 and X when the 2 dropped, or the Under when the
                     # Over dropped) - same market_key and point, different outcome.
@@ -766,45 +856,12 @@ class TennisMonitor:
                         and s.get("outcome") != sel.get("outcome")
                         and s.get("price")
                     ]
-                    text = self._format_drop_alert(match, sel, prev_price, curr,
-                                                   drop_last, drop_from_open, ctx,
-                                                   siblings)
-                    tg_result = {"ok": False}
-                    if not dry_run_notify:
-                        try:
-                            tg_result = await self.telegram.send_message(text)
-                        except Exception as e:
-                            tg_result = {"ok": False, "error": str(e)}
-                    best_it = (ctx or {}).get("best_it")
-                    betfair = (ctx or {}).get("betfair")
-                    polymarket = (ctx or {}).get("polymarket")
-                    kalshi = (ctx or {}).get("kalshi")
-                    await self.db.alerts.insert_one({
-                        "_id": str(uuid.uuid4()),
-                        "type": "drop",
-                        "provider": provider,
-                        "sport": sport,
-                        "created_at": now_dt.isoformat(),
-                        "player1": match.get("player1"),
-                        "player2": match.get("player2"),
-                        "tournament": match.get("tournament"),
-                        "start_epoch": start_epoch,
-                        "market_name": sel["market_name"],
-                        "label": sel["label"],
-                        "prev_price": round(prev_price, 3) if prev_price else None,
-                        "price": round(curr, 3),
-                        "drop_last": round(drop_last, 4),
-                        "drop_from_open": round(drop_from_open, 4),
-                        "best_book_it": best_it.get("bookmaker") if best_it else None,
-                        "best_price_it": round(best_it["price"], 3) if best_it else None,
-                        "betfair_price": round(betfair, 3) if betfair else None,
-                        "polymarket_price": round(polymarket, 3) if polymarket else None,
-                        "kalshi_price": round(kalshi, 3) if kalshi else None,
-                        "telegram_ok": bool(tg_result.get("ok")),
-                        "telegram_response": tg_result,
-                        "message": text,
-                    })
-                    alerts_sent += 1
+                    # Fire now, in the background: the Telegram send starts at
+                    # the next await (the DB write just below), not after the
+                    # rest of the scan.
+                    alert_tasks.append(asyncio.create_task(self._fire_drop_alert(
+                        match, sel, sport, provider, prev_price, curr, drop_last,
+                        drop_from_open, siblings, now_dt, dry_run_notify)))
 
                 line_rows.append({
                     "market_name": sel["market_name"],
@@ -832,64 +889,97 @@ class TennisMonitor:
                     "lines": line_rows,
                 })
 
-        # One round-trip for all the line-state upserts this scan produced.
+        # One round-trip for all the line-state upserts of this sport.
         if line_ops:
             await self.db.line_state.bulk_write(line_ops, ordered=False)
-
-        cutoff = (now_dt - timedelta(seconds=LINE_STATE_TTL_SECONDS)).isoformat()
-        try:
-            await self.db.line_state.delete_many({"updated_at": {"$lt": cutoff}})
-        except Exception:
-            logger.debug("line_state prune skipped")
-
-        if sports is not None:
-            # Partial scan (e.g. the fast F1 loop): keep the other sports'
-            # matches in the shared snapshot instead of wiping them. (This also
-            # preserves outrights, whose sport is never in the partial set.)
-            existing = await self.db.snapshots.find_one({"_id": "latest"}) or {}
-            kept = [m for m in existing.get("matches") or []
-                    if m.get("sport") not in sports]
-            matches_payload = kept + matches_payload
-        elif self.outright_enabled and not scanned_outright:
-            # Full scan that didn't refresh outrights this cycle (slow cadence):
-            # carry the previous outright matches forward so they don't vanish.
-            existing = await self.db.snapshots.find_one({"_id": "latest"}) or {}
-            have = {m.get("match_id") for m in matches_payload}
-            matches_payload += [m for m in existing.get("matches") or []
-                                if m.get("sport") == "outright" and m.get("match_id") not in have]
-
+        # Publish this sport's rows right away (dashboard sees each sport as it
+        # completes). Per-sport field: no read-modify-write of the snapshot.
         await self.db.snapshots.update_one(
             {"_id": "latest"},
-            {"$set": {
-                "updated_at": now_dt.isoformat(),
-                "provider": self.provider,
-                "basketball_enabled": self.basketball_enabled,
-                "football_enabled": self.football_enabled,
-                "football_provider": self.football_provider,
-                "f1_enabled": self.f1_enabled,
-                "mlb_enabled": self.mlb_enabled,
-                "hockey_enabled": self.hockey_enabled,
-                "volley_enabled": self.volley_enabled,
-                "outright_enabled": self.outright_enabled,
-                "drop_threshold": self.drop_threshold,
-                "football_drop_threshold": self.football_drop_threshold,
-                "tracking_enabled": self.tracking_enabled,
-                "matches": matches_payload,
-            }},
+            {"$set": {f"by_sport.{sport}": matches_payload}},
             upsert=True,
         )
+        totals["fixtures"] += len(matches_payload)
+        totals["selections"] += sum(len(m["lines"]) for m in matches_payload)
 
-        stats = {
-            "provider": self.provider,
-            "fixtures_tracked": len(matches_payload),
-            "selections_tracked": sum(len(m["lines"]) for m in matches_payload),
-            "drops_found": drops_found,
-            "alerts_sent": alerts_sent,
-            "requests_remaining": self.client.requests_remaining,
-        }
-        if sport_errors:
-            stats["sport_errors"] = sport_errors
-        return stats
+    async def _fire_drop_alert(self, match: dict, sel: dict, sport: str, provider: str,
+                               prev_price: float, curr: float, drop_last: float,
+                               drop_from_open: float, siblings: list[dict],
+                               now_dt: datetime, dry_run_notify: bool) -> bool:
+        """Send one drop alert. The Telegram message goes out FIRST with the
+        Pinnacle move; the slower cross-checks (Italian books / Betfair via The
+        Odds API, Polymarket, Kalshi - up to several seconds) run afterwards
+        and are edited into the same message, so they never delay the alert."""
+        try:
+            start_epoch = match.get("start_epoch")
+            text = self._format_drop_alert(match, sel, prev_price, curr, drop_last,
+                                           drop_from_open, None, siblings)
+            tg_result: dict = {"ok": False}
+            if not dry_run_notify:
+                try:
+                    async with self._send_sem:
+                        tg_result = await self.telegram.send_message(text)
+                except Exception as e:
+                    tg_result = {"ok": False, "error": str(e)}
+            alert_id = str(uuid.uuid4())
+            await self.db.alerts.insert_one({
+                "_id": alert_id,
+                "type": "drop",
+                "provider": provider,
+                "sport": sport,
+                "created_at": now_dt.isoformat(),
+                "player1": match.get("player1"),
+                "player2": match.get("player2"),
+                "tournament": match.get("tournament"),
+                "start_epoch": start_epoch,
+                "market_name": sel["market_name"],
+                "label": sel["label"],
+                "prev_price": round(prev_price, 3) if prev_price else None,
+                "price": round(curr, 3),
+                "drop_last": round(drop_last, 4),
+                "drop_from_open": round(drop_from_open, 4),
+                "best_book_it": None,
+                "best_price_it": None,
+                "betfair_price": None,
+                "polymarket_price": None,
+                "kalshi_price": None,
+                "telegram_ok": bool(tg_result.get("ok")),
+                "telegram_response": tg_result,
+                "message": text,
+            })
+
+            try:
+                ctx = await asyncio.wait_for(
+                    self._alert_market_context(match, sel, sport),
+                    timeout=ALERT_CONTEXT_TIMEOUT)
+            except Exception as e:
+                logger.warning("alert context failed/timed out: %s", e)
+                ctx = None
+            if ctx:
+                text = self._format_drop_alert(match, sel, prev_price, curr, drop_last,
+                                               drop_from_open, ctx, siblings)
+                msg_id = (tg_result.get("result") or {}).get("message_id")
+                if msg_id and not dry_run_notify:
+                    try:
+                        await self.telegram.edit_message(msg_id, text)
+                    except Exception as e:
+                        logger.warning("alert context edit failed: %s", e)
+                best_it = ctx.get("best_it")
+                betfair = ctx.get("betfair")
+                polymarket = ctx.get("polymarket")
+                kalshi = ctx.get("kalshi")
+                await self.db.alerts.update_one({"_id": alert_id}, {"$set": {
+                    "best_book_it": best_it.get("bookmaker") if best_it else None,
+                    "best_price_it": round(best_it["price"], 3) if best_it else None,
+                    "betfair_price": round(betfair, 3) if betfair else None,
+                    "polymarket_price": round(polymarket, 3) if polymarket else None,
+                    "kalshi_price": round(kalshi, 3) if kalshi else None,
+                    "message": text,
+                }})
+            return True
+        except Exception:
+            logger.exception("drop alert failed")
+            return False
 
     async def _notify_ip_blocked(self, provider: str):
         if provider in self._ipblock_alerted:
@@ -1067,47 +1157,112 @@ class TennisMonitor:
 
     async def scan_whales(self, dry_run_notify: bool = False) -> dict:
         """Poll Polymarket's whale trade feed and alert on large single orders
-        (>= WHALE_MIN_USD) placed on markets in the watched sports. Keyless and
+        (>= whale_min_usd) placed on markets in the watched sports. Keyless and
         independent of the odds scans / tracking toggle - gated only by
-        whale_enabled. First run baselines the seen-set without alerting so a
-        restart doesn't replay old whale trades."""
+        whale_enabled. First successful read baselines the seen-set without
+        alerting so a restart doesn't replay old whale trades.
+
+        Several fills by the same wallet on the same market/side are merged: the
+        first one alerts immediately, the follow-ups (within
+        WHALE_AGG_SECONDS) update that same Telegram message and alert row with
+        the running total instead of sending a new alert each."""
         if not self.whale_enabled:
             return {"whales": 0, "skipped": True}
         pred = self.clients["prediction"]
         now = _now()
+        now_ts = int(now.timestamp())
         if (not self._whale_condmap or self._whale_condmap_at is None
                 or (now - self._whale_condmap_at).total_seconds() >= WHALE_CONDMAP_TTL_SECONDS):
             try:
-                self._whale_condmap = await pred.get_whale_condition_map(pmk.WHALE_TAGS)
-                self._whale_condmap_at = now
+                condmap = await pred.get_whale_condition_map(pmk.WHALE_TAGS)
+                if condmap:
+                    self._whale_condmap = condmap
+                    self._whale_condmap_at = now
             except Exception as e:
                 logger.warning("whale condmap refresh failed: %s", e)
         try:
             trades = await pred.get_whale_trades(self.whale_min_usd)
         except Exception as e:
+            # Not baselined on a failed read: an empty "baseline" would let the
+            # next successful poll replay its whole backlog as new alerts.
             logger.warning("whale scan failed: %s", e)
             return {"whales": 0, "error": str(e)}
-        sent = 0
+
+        fresh: list[tuple[dict, tuple]] = []
         for t in trades:
             tx = t.get("tx")
             if not tx or tx in self._whale_seen:
                 continue
-            self._whale_seen.add(tx)
+            self._whale_seen[tx] = None
             if not self._whale_baselined:
                 continue  # first pass: seed the seen-set, don't replay history
+            try:
+                if t.get("ts") and now_ts - int(t["ts"]) > WHALE_MAX_AGE_SECONDS:
+                    continue  # old trade surfacing late: not actionable any more
+            except (TypeError, ValueError):
+                pass
             info = self._whale_condmap.get(t.get("cond"))
             if info is None:
                 continue  # trade isn't on a watched sport's market
-            emoji, label, title = info
-            text = self._format_whale_alert(t, emoji, label, title)
-            tg = {"ok": False}
+            fresh.append((t, info))
+        self._whale_baselined = True
+        if len(self._whale_seen) > 20000:  # keep the dedup set bounded (newest kept)
+            self._whale_seen = dict.fromkeys(list(self._whale_seen)[-8000:])
+
+        # Expire merge windows.
+        for k in [k for k, a in self._whale_aggs.items()
+                  if (now - a["last_at"]).total_seconds() > WHALE_AGG_SECONDS]:
+            del self._whale_aggs[k]
+
+        # Group this poll's fills per (market, side, outcome, wallet), oldest first.
+        groups: dict[tuple, list[tuple[dict, tuple]]] = {}
+        for t, info in sorted(fresh, key=lambda x: x[0].get("ts") or 0):
+            who = t.get("wallet") or t.get("name") or t.get("tx")
+            key = (t.get("cond"), t.get("side"), t.get("outcome"), who)
+            groups.setdefault(key, []).append((t, info))
+
+        sent = 0
+        for key, items in groups.items():
+            emoji, label, title = items[0][1]
+            last = items[-1][0]
+            usd = sum(float(t.get("usd") or 0) for t, _ in items)
+            agg = self._whale_aggs.get(key)
+            if agg is not None:
+                # Same whale adding to a position alerted minutes ago: update
+                # that alert in place (running total) rather than a new ping.
+                agg["usd"] += usd
+                agg["fills"] += len(items)
+                agg["price"] = last.get("price") or agg["price"]
+                agg["last_at"] = now
+                text = self._format_whale_alert(agg, emoji, label, title)
+                if agg.get("msg_id") and not dry_run_notify:
+                    try:
+                        await self.telegram.edit_message(agg["msg_id"], text)
+                    except Exception as e:
+                        logger.warning("whale alert edit failed: %s", e)
+                await self.db.alerts.update_one({"_id": agg["alert_id"]}, {"$set": {
+                    "whale_usd": round(agg["usd"]),
+                    "whale_fills": agg["fills"],
+                    "price": round(agg["price"], 3),
+                    "message": text,
+                }})
+                continue
+            agg = {
+                "usd": usd, "fills": len(items), "price": last.get("price") or 0.0,
+                "side": last.get("side"), "outcome": last.get("outcome"),
+                "name": last.get("name"), "last_at": now,
+                "alert_id": str(uuid.uuid4()), "msg_id": None,
+            }
+            text = self._format_whale_alert(agg, emoji, label, title)
+            tg: dict = {"ok": False}
             if not dry_run_notify:
                 try:
                     tg = await self.telegram.send_message(text)
                 except Exception as e:
                     tg = {"ok": False, "error": str(e)}
+            agg["msg_id"] = (tg.get("result") or {}).get("message_id")
             await self.db.alerts.insert_one({
-                "_id": str(uuid.uuid4()),
+                "_id": agg["alert_id"],
                 "type": "whale",
                 "provider": "prediction",
                 "sport": "whale",
@@ -1116,17 +1271,16 @@ class TennisMonitor:
                 "player2": None,
                 "tournament": f"{emoji} {label}",
                 "market_name": "Polymarket whale",
-                "label": t.get("outcome"),
-                "whale_usd": round(t["usd"]),
-                "whale_side": t["side"],
-                "price": round(t["price"], 3),
+                "label": agg["outcome"],
+                "whale_usd": round(agg["usd"]),
+                "whale_side": agg["side"],
+                "whale_fills": agg["fills"],
+                "price": round(agg["price"], 3),
                 "telegram_ok": bool(tg.get("ok")),
                 "message": text,
             })
+            self._whale_aggs[key] = agg
             sent += 1
-        self._whale_baselined = True
-        if len(self._whale_seen) > 20000:  # keep the dedup set bounded
-            self._whale_seen = set(list(self._whale_seen)[-8000:])
         return {"whales": sent}
 
     def _format_whale_alert(self, t: dict, emoji: str, label: str, title: str) -> str:
@@ -1137,9 +1291,12 @@ class TennisMonitor:
         dec = 1.0 / price if price else 0.0
         name = str(t.get("name") or "")
         who = f"\n👤 <code>{esc(name)}</code>" if name else ""
+        fills = int(t.get("fills") or 1)
+        total = f" (totale, {fills} ordini)" if fills > 1 else ""
         return (
             f"<b>🐋 WHALE Polymarket — {esc(emoji)} {esc(label)}</b>\n"
             f"{esc(title)}\n"
-            f"<b>{side_it} ${t['usd']:,.0f}</b> su <b>{esc(str(t.get('outcome') or ''))}</b> "
+            f"<b>{side_it} ${t['usd']:,.0f}</b>{total} su "
+            f"<b>{esc(str(t.get('outcome') or ''))}</b> "
             f"@ {price:.3f} (quota {dec:.2f}){who}"
         )

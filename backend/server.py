@@ -29,12 +29,13 @@ logger = logging.getLogger("tennis-monitor")
 
 REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))  # 6 refresh / ora
 # Fast F1/MLB loop (prediction markets are keyless/free, so it doesn't consume
-# any provider quota). Since these now use the 60-minute window, 120s still gives
-# fine granularity in the hour before an event while halving the idle polling
-# churn vs the old 60s. 0 disables it. Tunable via F1_REFRESH_SECONDS.
-F1_REFRESH_SECONDS = int(os.environ.get("F1_REFRESH_SECONDS", "120"))
-# Whale monitor loop (keyless Polymarket Data API). 0 disables it.
-WHALE_REFRESH_SECONDS = int(os.environ.get("WHALE_REFRESH_SECONDS", "120"))
+# any provider quota): alert latency is the priority, and a poll only fetches
+# the games inside the 60-minute window, so poll every minute. 0 disables it
+# (F1/MLB then run on the main loop). Tunable via F1_REFRESH_SECONDS.
+F1_REFRESH_SECONDS = int(os.environ.get("F1_REFRESH_SECONDS", "60"))
+# Whale monitor loop (keyless Polymarket Data API, one small request per poll
+# thanks to the server-side size filter). 0 disables it.
+WHALE_REFRESH_SECONDS = int(os.environ.get("WHALE_REFRESH_SECONDS", "30"))
 
 mongo_url = os.environ["MONGO_URL"]
 db_name = os.environ["DB_NAME"]
@@ -69,6 +70,8 @@ async def lifespan(app: FastAPI):
     # providers' cadence. Partial scans merge into the snapshot without
     # touching the main scan's status.
     if F1_REFRESH_SECONDS > 0:
+        # The main scan leaves these sports to the fast loop.
+        monitor.fast_loop_sports = PREDICTION_SPORTS
         scheduler.add_job(
             monitor.scan_once,
             trigger=IntervalTrigger(seconds=F1_REFRESH_SECONDS),
@@ -271,14 +274,23 @@ async def get_snapshot():
             "tracking_enabled": monitor.tracking_enabled,
             "matches": [],
         }
+    # Matches are stored per sport (each loop writes only its own sports);
+    # flatten them for the dashboard, hiding sports that are toggled off.
+    by_sport = snap.pop("by_sport", None)
+    if by_sport:
+        snap["matches"] = [m for sport, ms in by_sport.items()
+                           if monitor.sport_enabled(sport) for m in (ms or [])]
     return snap
 
 
 @api.get("/alerts")
 async def list_alerts(limit: int = 50):
-    docs = await db.alerts.find({}, {"_id": 0, "telegram_response": 0}).sort(
-        "created_at", -1
-    ).to_list(limit)
+    # The Telegram HTML text and raw response aren't rendered by the dashboard:
+    # leave them out of the payload it polls every few seconds.
+    limit = max(1, min(limit, 500))
+    docs = await db.alerts.find(
+        {}, {"_id": 0, "telegram_response": 0, "message": 0}
+    ).sort("created_at", -1).to_list(limit)
     return {"alerts": docs}
 
 

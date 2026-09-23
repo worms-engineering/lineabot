@@ -64,6 +64,8 @@ export default function Dashboard() {
   const lastAlertRef = useRef(null);
   const quotaWarnRef = useRef(null);
 
+  // Full reload (incl. settings): on open, after every change, and when the
+  // tab comes back to the foreground.
   const loadAll = useCallback(async () => {
     try {
       const [s, cfg, snap, alertsResp] = await Promise.all([
@@ -81,13 +83,46 @@ export default function Dashboard() {
     }
   }, []);
 
+  // Periodic poll. Settings are left out (they only change through this UI,
+  // which reloads them - and re-fetching them every 15s kept resetting the
+  // Settings dialog fields while you were typing). In a background tab only
+  // the alerts are polled: enough to keep the new-alert sound working without
+  // pulling the whole snapshot for a page nobody is looking at.
+  const poll = useCallback(async () => {
+    try {
+      if (document.hidden) {
+        const alertsResp = await axios.get(`${API}/alerts?limit=100`);
+        setAlerts(alertsResp.data.alerts || []);
+        return;
+      }
+      const [s, snap, alertsResp] = await Promise.all([
+        axios.get(`${API}/status`),
+        axios.get(`${API}/snapshot`),
+        axios.get(`${API}/alerts?limit=100`),
+      ]);
+      setStatus(s.data);
+      setSnapshot(snap.data);
+      setAlerts(alertsResp.data.alerts || []);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => {
-    const t = setInterval(loadAll, 15000);
-    return () => clearInterval(t);
-  }, [loadAll]);
+    const t = setInterval(poll, 15000);
+    const onVisible = () => { if (!document.hidden) loadAll(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [poll, loadAll]);
+  // Coarse clock for hiding started matches/alerts: minute-level precision is
+  // plenty, and a 1s tick re-rendered the whole dashboard every second. The
+  // per-second countdown lives in its own tiny <Countdown> component.
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(t);
   }, []);
 
@@ -345,11 +380,6 @@ export default function Dashboard() {
     }
   };
 
-  const nextScanSec = useMemo(() => {
-    if (!status?.next_scan_at) return null;
-    return Math.max(0, Math.floor((new Date(status.next_scan_at).getTime() - now) / 1000));
-  }, [status, now]);
-
   const nowSec = Math.floor(now / 1000);
   const rows = useMemo(() => {
     if (!snapshot?.matches) return [];
@@ -370,7 +400,7 @@ export default function Dashboard() {
     m => !m.start_time || m.start_time > nowSec
   ).length;
   const activeDrops = rows.filter(r => r.is_drop).length;
-  const threshold = (settings?.drop_threshold ?? 0.05) * 100;
+  const threshold = (status?.drop_threshold ?? settings?.drop_threshold ?? 0.05) * 100;
 
   return (
     <div className="min-h-screen lg:h-screen w-full flex flex-col bg-[#0A0A0A] text-white lg:overflow-hidden" data-testid="dashboard-root">
@@ -388,7 +418,7 @@ export default function Dashboard() {
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <StatusPill label="Last scan" value={status?.last_scan_at ? new Date(status.last_scan_at).toLocaleTimeString() : "—"} icon={<Clock size={14} />} />
-          <StatusPill label="Next scan" value={fmtCountdown(nextScanSec)} icon={<Radio size={14} className="text-[#007AFF]" />} mono />
+          <StatusPill label="Next scan" value={<Countdown to={status?.next_scan_at} />} icon={<Radio size={14} className="text-[#007AFF]" />} mono />
           <StatusPill label="Drop ≥" value={`${threshold.toFixed(1)}%`} icon={<TrendingDown size={14} />} mono />
 
           {provider === "theoddsapi" && status?.requests_remaining != null && (
@@ -660,7 +690,7 @@ export default function Dashboard() {
                   </div>
                   <div>
                     {tracking
-                      ? <>Prossimo controllo tra <span className="text-white">{fmtCountdown(nextScanSec)}</span>.</>
+                      ? <>Prossimo controllo tra <span className="text-white"><Countdown to={status?.next_scan_at} /></span>.</>
                       : "Attiva il tracciamento dal pulsante in alto."}
                   </div>
                 </div>
@@ -715,7 +745,7 @@ export default function Dashboard() {
                       </div>
                       <div>
                         {tracking
-                          ? <>Monitoro i match con inizio nei prossimi 60 minuti. Prossimo controllo tra <span className="text-white">{fmtCountdown(nextScanSec)}</span>.</>
+                          ? <>Monitoro i match con inizio nei prossimi 60 minuti. Prossimo controllo tra <span className="text-white"><Countdown to={status?.next_scan_at} /></span>.</>
                           : "Attiva il tracciamento dal pulsante in alto per iniziare a monitorare le quote."}
                       </div>
                     </td>
@@ -842,6 +872,18 @@ export default function Dashboard() {
       </div>
     </div>
   );
+}
+
+// Self-ticking countdown to an ISO timestamp: only this text node re-renders
+// every second, not the whole dashboard.
+function Countdown({ to }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const sec = to ? Math.max(0, Math.floor((new Date(to).getTime() - now) / 1000)) : null;
+  return <>{fmtCountdown(sec)}</>;
 }
 
 function SectionTitle({ children, icon }) {
