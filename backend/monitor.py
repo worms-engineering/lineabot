@@ -67,9 +67,12 @@ ROTATION_COOLDOWN_SECONDS = 5 * 60
 DEFAULT_PROVIDER = "oddspapi"
 
 # Basketball is tracked only on OddsPapi (the provider with basketball parsing),
-# restricted to these competitions (tournament-name substrings, case-insensitive):
-# NBA + NBA Summer League + WNBA + EuroBasket. Edit to taste.
-BASKETBALL_WHITELIST = ["nba", "wnba", "eurobasket"]
+# restricted to these competitions. Plain strings are tournament-name substrings
+# (case-insensitive): NBA + NBA Summer League + WNBA + EuroBasket. The EuroLeague
+# is an EXACT match (2-tuple, see FOOTBALL_WHITELIST_ODDSPAPI) so it doesn't also
+# pull in "Euroleague Women" / "Euroleague SuperCup". Names verified live against
+# GET /v4/tournaments?sportId=11 ("Euroleague", id 138). Edit to taste.
+BASKETBALL_WHITELIST = ["nba", "wnba", "eurobasket", ("international", "euroleague")]
 
 # Hockey runs on OddsPapi. Left open (None): the hockey calendar is small
 # enough (even in-season a 1h window sees a handful of leagues) and Pinnacle
@@ -132,6 +135,9 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     # MX" (2nd tier) and "Liga Premier" (lower).
     ("mexico", "liga mx, apertura"),    # Liga MX Apertura (id 27464)
     ("mexico", "liga mx, clausura"),    # Liga MX Clausura (id 27466)
+    # National teams: UEFA Nations League (id 23755). Exact match excludes
+    # "UEFA Nations League, Women", the "... SRL" simulated feed and CONCACAF's.
+    ("international", "uefa nations league"),
     (None, "champions league", "contains"),
     (None, "europa league", "contains"),
     (None, "conference league", "contains"),

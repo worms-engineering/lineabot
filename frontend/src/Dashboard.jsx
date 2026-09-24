@@ -455,7 +455,7 @@ export default function Dashboard() {
           <button
             data-testid="basketball-toggle"
             onClick={toggleBasketball}
-            title="Traccia anche il basket (NBA/WNBA/EuroBasket, via OddsPapi)"
+            title="Traccia anche il basket (NBA/WNBA/EuroLeague/EuroBasket, via OddsPapi)"
             className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
               basketball
                 ? "border-[#FF9F0A]/40 bg-[#FF9F0A]/10 text-[#FF9F0A] hover:bg-[#FF9F0A]/20"

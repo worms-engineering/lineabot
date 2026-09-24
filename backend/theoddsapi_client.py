@@ -45,6 +45,7 @@ FOOTBALL_LEAGUE_KEYS = [
     "soccer_brazil_campeonato",            # Brazil Serie A (Brasileirao)
     "soccer_argentina_primera_division",   # Argentina Primera (Liga Profesional)
     "soccer_mexico_ligamx",                # Mexico Liga MX
+    "soccer_uefa_nations_league",          # UEFA Nations League
 ]
 DEFAULT_REGIONS = "eu"
 DEFAULT_MARKETS = "h2h,totals"
@@ -75,6 +76,7 @@ LEAGUE_SPORT_KEYS = [
     ("brasileiro serie a", "soccer_brazil_campeonato"),
     ("liga profesional", "soccer_argentina_primera_division"),
     ("liga mx", "soccer_mexico_ligamx"),
+    ("uefa nations league", "soccer_uefa_nations_league"),
     ("premier league", "soccer_epl"),
     ("laliga", "soccer_spain_la_liga"),
     ("la liga", "soccer_spain_la_liga"),
@@ -288,7 +290,10 @@ class TheOddsApiClient:
                 continue
             if tournament_filter:
                 name = (ev.get("sport_title") or "").lower()
-                if not any(p in name for p in tournament_filter):
+                # Whitelists may mix substrings and (category, name[, mode])
+                # tuples (OddsPapi-style); here only the name part applies.
+                if not any((p if isinstance(p, str) else p[1]) in name
+                           for p in tournament_filter):
                     continue
             book = next((b for b in ev.get("bookmakers") or []
                          if b.get("key") == "pinnacle"), None)

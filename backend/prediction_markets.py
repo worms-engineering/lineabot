@@ -6,10 +6,10 @@ providers, these cost nothing per lookup:
   `outcomes` (["TeamA","TeamB"]) and `outcomePrices` (probabilities 0-1).
 - Kalshi: per-game binary markets grouped by ticker prefix
   (KXWNBAGAME-26AUG25PDXDAL-PDX / -DAL), titles "<Team> wins",
-  yes_bid/yes_ask in cents.
+  yes_ask_dollars/yes_bid_dollars (0-1 dollar strings).
 
 Prices are probabilities: decimal odds = 1 / probability. Liquidity is thin
-far from tip-off and quotes can be absent (yes_ask None), so every lookup
+far from tip-off and quotes can be absent (no ask/bid), so every lookup
 returns None liberally - a missing cross-check must never break an alert.
 """
 from __future__ import annotations
@@ -112,8 +112,8 @@ async def _gamma_events_xcheck(tag: str) -> list[dict]:
 
 # sport -> Polymarket tag slugs carrying game moneylines.
 POLYMARKET_TAGS = {
-    "basketball": ["nba", "wnba"],
-    "football": ["epl", "ucl"],
+    "basketball": ["nba", "wnba", "euroleague-basketball"],
+    "football": ["epl", "ucl", "uefa-nations-league"],
     # Per-match tennis moneylines; outcomes are last names, matched via
     # word overlap; stale/resolved events are rejected by the time gate
     # and the 2%-97% probability band.
@@ -122,8 +122,11 @@ POLYMARKET_TAGS = {
 # sport -> Kalshi game-winner series tickers. Basketball only for now:
 # football titles are city-based and error-prone to match.
 KALSHI_SERIES = {
-    "basketball": ["KXNBAGAME", "KXWNBAGAME"],
+    "basketball": ["KXNBAGAME", "KXWNBAGAME", "KXEUROLEAGUEGAME"],
 }
+# Max |Kalshi event time - game start| for a game market to count as the same
+# game (see _kalshi_event_ts).
+_KALSHI_TIME_TOLERANCE = 36 * 3600
 
 # ---- F1 tracking (Polymarket as source, Kalshi as cross-check) ----
 # Polymarket event-title suffixes worth tracking; the rest (practice,
@@ -192,6 +195,7 @@ _FOOTBALL_WHALE_TAGS = [
     "epl", "la-liga", "serie-a", "bundesliga", "ligue-1", "ere", "primeira-liga",
     "brazil-serie-a", "arg", "mex", "ucl", "champions-league", "uel",
     "europa-league", "uefa-conference-league", "europa-conference-league",
+    "uefa-nations-league",
 ]
 WHALE_TAGS = _FOOTBALL_WHALE_TAGS + ["tennis", "nba", "basketball", "wnba",
                                      "f1", "mlb", "golf"]
@@ -315,6 +319,33 @@ async def polymarket_price(sport: str, home: str, away: str,
     return None
 
 
+def _kalshi_event_ts(m: dict) -> int | None:
+    """When the event actually happens. `occurrence_datetime` /
+    `expected_expiration_time` sit ~3h after tip-off (~6h after an F1 start);
+    `close_time` is only the trading deadline, ~2 days to a week later - gating
+    on it (as before) rejected every NBA/WNBA/F1 market against the 36h/72h
+    windows."""
+    return (_parse_ts(m.get("occurrence_datetime"))
+            or _parse_ts(m.get("expected_expiration_time"))
+            or _parse_ts(m.get("close_time")))
+
+
+def _kalshi_yes_prob(m: dict) -> float | None:
+    """YES price of a Kalshi market as a 0-1 probability (ask, else bid).
+    Kalshi now publishes prices as dollar strings (`yes_ask_dollars`, e.g.
+    "0.4100"); the legacy integer-cent fields (`yes_ask`) come back null, which
+    silently disabled every Kalshi cross-check. Cents kept as a fallback."""
+    for key in ("yes_ask_dollars", "yes_bid_dollars"):
+        try:
+            v = float(m.get(key) or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v > 0:
+            return v
+    cents = m.get("yes_ask") or m.get("yes_bid")
+    return cents / 100 if cents else None
+
+
 async def kalshi_price(sport: str, home: str, away: str,
                        start_epoch: int, side: str) -> float | None:
     """Decimal odds for `side` to win the game, or None."""
@@ -346,13 +377,9 @@ async def kalshi_price(sport: str, home: str, away: str,
                     if not mt:
                         continue
                     sides[mt.group(1)] = m
-                    try:
-                        close = datetime.fromisoformat(
-                            str(m.get("close_time") or "").replace("Z", "+00:00"))
-                        if abs((close.timestamp() - start_epoch)) <= 36 * 3600:
-                            ok_time = True
-                    except ValueError:
-                        pass
+                    ev_ts = _kalshi_event_ts(m)
+                    if ev_ts is not None and abs(ev_ts - start_epoch) <= _KALSHI_TIME_TOLERANCE:
+                        ok_time = True
                 if len(sides) != 2 or not ok_time:
                     continue
                 names = list(sides)
@@ -361,12 +388,16 @@ async def kalshi_price(sport: str, home: str, away: str,
                     continue
                 for name, m in sides.items():
                     if _same_team(name, side, shared):
-                        cents = m.get("yes_ask") or m.get("yes_bid")
-                        price = _to_decimal((cents or 0) / 100) if cents else None
+                        prob = _kalshi_yes_prob(m)
+                        price = _to_decimal(prob) if prob else None
                         if price:
                             logger.info("kalshi %s: %s @ %s", series, side, price)
                         return price
     return None
+
+
+_KALSHI_F1_Q = re.compile(
+    r"^(?:Will\s+(.+?)\s+win\b|(.+?)\s+to\s+finish\s+in\s+first\b)", re.I)
 
 
 async def kalshi_f1_price(driver: str, start_epoch: int) -> float | None:
@@ -381,16 +412,21 @@ async def kalshi_f1_price(driver: str, start_epoch: int) -> float | None:
             data = r.json() if r.status_code == 200 else {}
         except Exception:
             return None
-    win_q = re.compile(r"^Will\s+(.+?)\s+win\b", re.I)
     for m in (data or {}).get("markets") or []:
-        mt = win_q.match(str(m.get("title") or ""))
-        if not mt or not _same_team(mt.group(1), driver):
+        # Driver name: `yes_sub_title` ("Max Verstappen"); the title format
+        # changed from "Will X win ...?" to "X to finish in first", so parse
+        # both as a fallback.
+        name = m.get("yes_sub_title")
+        if not name:
+            mt = _KALSHI_F1_Q.match(str(m.get("title") or ""))
+            name = (mt.group(1) or mt.group(2)) if mt else None
+        if not name or not _same_team(name, driver):
             continue
-        close_ts = _parse_ts(m.get("close_time"))
-        if close_ts is not None and abs(close_ts - start_epoch) > 72 * 3600:
+        ev_ts = _kalshi_event_ts(m)
+        if ev_ts is not None and abs(ev_ts - start_epoch) > 72 * 3600:
             continue
-        cents = m.get("yes_ask") or m.get("yes_bid")
-        return _to_decimal((cents or 0) / 100) if cents else None
+        prob = _kalshi_yes_prob(m)
+        return _to_decimal(prob) if prob else None
     return None
 
 
