@@ -1124,7 +1124,8 @@ class TennisMonitor:
         # source in the header is always right.
         is_prediction = match.get("provider") == "prediction"
         p1, p2 = match.get("player1"), match.get("player2")
-        if p2 and sport == "f1" and match.get("player2") in ("Race Winner", "Podium"):
+        if p2 and sport == "f1" and match.get("player2") in ("Race Winner", "Podium",
+                                                              "Pole Position"):
             pairing = f"{esc(str(p1))} · {esc(str(p2))}"
         elif p2:
             pairing = f"{esc(str(p1))} vs {esc(str(p2))}"

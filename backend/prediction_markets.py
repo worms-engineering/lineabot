@@ -129,11 +129,16 @@ KALSHI_SERIES = {
 _KALSHI_TIME_TOLERANCE = 36 * 3600
 
 # ---- F1 tracking (Polymarket as source, Kalshi as cross-check) ----
-# Polymarket event-title suffixes worth tracking; the rest (practice,
-# qualifying, fastest lap, props) is noise with no liquidity.
+# Polymarket event-title suffixes worth tracking; the rest (practice, fastest
+# lap, constructor markets, props) is noise with no liquidity. Qualifying's
+# "Driver Pole Position" is tracked too: it has grown a real book (Baku 2026:
+# ~$86k event liquidity, 23 drivers with >= $500 each - deeper than Podium).
+# Its markets carry the QUALIFYING start as gameStartTime, so the usual
+# 60-minute window applies to the qualifying session, not the race.
 F1_EVENT_MARKETS = [
     ("Driver Winner", "winner", "Race Winner"),
     ("Driver Podium Finish", "podium", "Podium"),
+    ("Driver Pole Position", "pole", "Pole Position"),
     ("Head-to-Head", "h2h", "Head-to-Head"),
 ]
 # Only track selections priced inside this probability band: outside it the
