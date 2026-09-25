@@ -401,19 +401,31 @@ async def kalshi_price(sport: str, home: str, away: str,
     return None
 
 
+# Tracked F1 market_key -> Kalshi series with the same question, one binary
+# market per driver ("X to finish in first", "X to finish" [podium],
+# "X is awarded Pole Position"); driver name in `yes_sub_title`.
+KALSHI_F1_SERIES = {
+    "winner": "KXF1RACE",
+    "podium": "KXF1RACEPODIUM",
+    "pole": "KXF1POLE",
+}
 _KALSHI_F1_Q = re.compile(
     r"^(?:Will\s+(.+?)\s+win\b|(.+?)\s+to\s+finish\s+in\s+first\b)", re.I)
 
 
-async def kalshi_f1_price(driver: str, start_epoch: int) -> float | None:
-    """Decimal odds for a driver to win the upcoming F1 race on Kalshi
-    (KXF1RACE series, 'Will X win ... Grand Prix?' markets), or None."""
-    if not driver:
+async def kalshi_f1_price(driver: str, start_epoch: int,
+                          market_key: str = "winner") -> float | None:
+    """Decimal odds for a driver on the upcoming F1 event on Kalshi, for the
+    tracked Polymarket market `market_key` (race winner / podium / pole, see
+    KALSHI_F1_SERIES), or None. Kalshi opens the pole series per GP, sometimes
+    only close to qualifying - no open market simply means no cross-check."""
+    series = KALSHI_F1_SERIES.get(market_key)
+    if not driver or not series:
         return None
     async with _client() as client:
         try:
             r = await client.get(_KALSHI_MARKETS, params={
-                "series_ticker": "KXF1RACE", "status": "open", "limit": 200})
+                "series_ticker": series, "status": "open", "limit": 200})
             data = r.json() if r.status_code == 200 else {}
         except Exception:
             return None

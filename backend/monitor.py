@@ -1035,10 +1035,11 @@ class TennisMonitor:
             side = None
 
         async def kalshi_f1_lookup() -> None:
-            if sport != "f1" or sel["market_key"] != "winner":
+            if sport != "f1" or sel["market_key"] not in pmk.KALSHI_F1_SERIES:
                 return
             try:
-                p = await pmk.kalshi_f1_price(side or sel.get("label"), start_epoch)
+                p = await pmk.kalshi_f1_price(side or sel.get("label"), start_epoch,
+                                              sel["market_key"])
                 if p:
                     ctx["kalshi"] = p
             except Exception as e:
