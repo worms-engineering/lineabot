@@ -196,6 +196,11 @@ OUTRIGHT_REFRESH_SECONDS = int(os.environ.get("OUTRIGHT_REFRESH_SECONDS", str(30
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
 
+# F1 multi-driver markets (race winner, podium, pole, sprint...) are shown as
+# "<GP> · <market>" instead of "A vs B" - derived from the tracked list so a
+# newly added F1 market is formatted right automatically.
+_F1_MULTI_LABELS = {label for _, key, label in pmk.F1_EVENT_MARKETS if key != "h2h"}
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -1125,8 +1130,7 @@ class TennisMonitor:
         # source in the header is always right.
         is_prediction = match.get("provider") == "prediction"
         p1, p2 = match.get("player1"), match.get("player2")
-        if p2 and sport == "f1" and match.get("player2") in ("Race Winner", "Podium",
-                                                              "Pole Position"):
+        if p2 and sport == "f1" and match.get("player2") in _F1_MULTI_LABELS:
             pairing = f"{esc(str(p1))} · {esc(str(p2))}"
         elif p2:
             pairing = f"{esc(str(p1))} vs {esc(str(p2))}"

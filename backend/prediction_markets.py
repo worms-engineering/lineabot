@@ -139,6 +139,11 @@ F1_EVENT_MARKETS = [
     ("Driver Winner", "winner", "Race Winner"),
     ("Driver Podium Finish", "podium", "Podium"),
     ("Driver Pole Position", "pole", "Pole Position"),
+    # Sprint weekends: the sprint race and its qualifying (Singapore 2026:
+    # ~$71k on the sprint; past sprint-qualifying events traded up to ~$100k).
+    # Each carries its own session start as gameStartTime.
+    ("Sprint Winner", "sprint", "Sprint Winner"),
+    ("Sprint Qualifying Pole Winner", "sprint_pole", "Sprint Pole"),
     ("Head-to-Head", "h2h", "Head-to-Head"),
 ]
 # Only track selections priced inside this probability band: outside it the
@@ -408,6 +413,8 @@ KALSHI_F1_SERIES = {
     "winner": "KXF1RACE",
     "podium": "KXF1RACEPODIUM",
     "pole": "KXF1POLE",
+    "sprint": "KXF1RACESPRINT",       # "Sprint Race: X wins"
+    "sprint_pole": "KXF1SPRINTPOLE",  # "X is awarded Sprint Pole"
 }
 _KALSHI_F1_Q = re.compile(
     r"^(?:Will\s+(.+?)\s+win\b|(.+?)\s+to\s+finish\s+in\s+first\b)", re.I)
