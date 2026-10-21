@@ -119,6 +119,7 @@ class SettingsIn(BaseModel):
     drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     football_drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     tracking_enabled: bool | None = None
+    tennis_enabled: bool | None = None
     basketball_enabled: bool | None = None
     football_enabled: bool | None = None
     hockey_enabled: bool | None = None
@@ -140,6 +141,7 @@ class SettingsOut(BaseModel):
     drop_threshold: float
     football_drop_threshold: float
     tracking_enabled: bool
+    tennis_enabled: bool
     basketball_enabled: bool
     football_enabled: bool
     hockey_enabled: bool
@@ -169,6 +171,7 @@ class StatusOut(BaseModel):
     drop_threshold: float
     football_drop_threshold: float
     tracking_enabled: bool
+    tennis_enabled: bool
     basketball_enabled: bool
     football_enabled: bool
     hockey_enabled: bool
@@ -199,7 +202,8 @@ _PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
 
 def _quota_warning() -> str | None:
     """Human message if any in-use provider is out of / low on quota."""
-    in_use = {monitor.provider}
+    # `provider` is the tennis odds source: only in use while tennis is on.
+    in_use = {monitor.provider} if monitor.tennis_enabled else set()
     if monitor.basketball_enabled:
         in_use.add("oddspapi")  # basketball always runs on OddsPapi
     if monitor.football_enabled:
@@ -245,6 +249,7 @@ async def get_status():
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
+        tennis_enabled=monitor.tennis_enabled,
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
         hockey_enabled=monitor.hockey_enabled,
@@ -316,6 +321,7 @@ def _settings_out() -> SettingsOut:
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
+        tennis_enabled=monitor.tennis_enabled,
         basketball_enabled=monitor.basketball_enabled,
         football_enabled=monitor.football_enabled,
         hockey_enabled=monitor.hockey_enabled,
@@ -350,6 +356,7 @@ async def update_settings(body: SettingsIn):
         drop_threshold=body.drop_threshold,
         football_drop_threshold=body.football_drop_threshold,
         tracking_enabled=body.tracking_enabled,
+        tennis_enabled=body.tennis_enabled,
         basketball_enabled=body.basketball_enabled,
         football_enabled=body.football_enabled,
         hockey_enabled=body.hockey_enabled,

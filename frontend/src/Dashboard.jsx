@@ -280,6 +280,18 @@ export default function Dashboard() {
     }
   };
 
+  // Missing field (backend not yet redeployed) reads as ON, like before.
+  const tennis = status?.tennis_enabled !== false;
+  const toggleTennis = async () => {
+    try {
+      await axios.put(`${API}/settings`, { tennis_enabled: !tennis });
+      toast[!tennis ? "success" : "info"](`Tennis ${!tennis ? "attivato" : "disattivato"}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
   const basketball = !!status?.basketball_enabled;
   const toggleBasketball = async () => {
     try {
@@ -450,6 +462,19 @@ export default function Dashboard() {
             }`}
           >
             <Power size={14} /> {tracking ? "Tracking ON" : "Tracking OFF"}
+          </button>
+
+          <button
+            data-testid="tennis-toggle"
+            onClick={toggleTennis}
+            title="Traccia il tennis (ATP/WTA/Challenger/ITF, via OddsPapi)"
+            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+              tennis
+                ? "border-[#32D74B]/40 bg-[#32D74B]/10 text-[#32D74B] hover:bg-[#32D74B]/20"
+                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
+            }`}
+          >
+            🎾 {tennis ? "ON" : "OFF"}
           </button>
 
           <button

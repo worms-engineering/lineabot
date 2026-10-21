@@ -244,6 +244,7 @@ class TennisMonitor:
         # independently configurable, defaults to the same value as tennis/basket.
         self.football_drop_threshold = drop_threshold
         self.tracking_enabled = True
+        self.tennis_enabled = True
         self.basketball_enabled = True
         self.football_enabled = True
         self.hockey_enabled = True
@@ -303,6 +304,8 @@ class TennisMonitor:
             )
             if "tracking_enabled" in cfg:
                 self.tracking_enabled = bool(cfg["tracking_enabled"])
+            if "tennis_enabled" in cfg:
+                self.tennis_enabled = bool(cfg["tennis_enabled"])
             if "basketball_enabled" in cfg:
                 self.basketball_enabled = bool(cfg["basketball_enabled"])
             if "football_enabled" in cfg:
@@ -366,6 +369,7 @@ class TennisMonitor:
     async def save_settings(self, drop_threshold: float | None = None,
                             football_drop_threshold: float | None = None,
                             tracking_enabled: bool | None = None,
+                            tennis_enabled: bool | None = None,
                             basketball_enabled: bool | None = None,
                             football_enabled: bool | None = None,
                             hockey_enabled: bool | None = None,
@@ -391,6 +395,9 @@ class TennisMonitor:
         if tracking_enabled is not None:
             self.tracking_enabled = bool(tracking_enabled)
             update["tracking_enabled"] = self.tracking_enabled
+        if tennis_enabled is not None:
+            self.tennis_enabled = bool(tennis_enabled)
+            update["tennis_enabled"] = self.tennis_enabled
         if basketball_enabled is not None:
             self.basketball_enabled = bool(basketball_enabled)
             update["basketball_enabled"] = self.basketball_enabled
@@ -563,7 +570,9 @@ class TennisMonitor:
 
     def _scan_plan(self) -> list[tuple]:
         """(sport, provider_key, tournament_whitelist) to scan this cycle."""
-        plan = [("tennis", self.provider, None)]
+        plan = []
+        if self.tennis_enabled:
+            plan.append(("tennis", self.provider, None))
         if self.basketball_enabled:
             plan.append(("basketball", "oddspapi", BASKETBALL_WHITELIST))
         if self.football_enabled:
@@ -585,10 +594,8 @@ class TennisMonitor:
         return plan
 
     def sport_enabled(self, sport: str) -> bool:
-        """Whether a sport's matches belong on the dashboard right now (tennis
-        is always scanned; every other sport has a `<sport>_enabled` toggle)."""
-        if sport == "tennis":
-            return True
+        """Whether a sport's matches belong on the dashboard right now (every
+        sport has a `<sport>_enabled` toggle)."""
         return bool(getattr(self, f"{sport}_enabled", True))
 
     async def _scan_impl(self, dry_run_notify: bool,
@@ -686,6 +693,7 @@ class TennisMonitor:
             {"$set": {
                 "updated_at": now_dt.isoformat(),
                 "provider": self.provider,
+                "tennis_enabled": self.tennis_enabled,
                 "basketball_enabled": self.basketball_enabled,
                 "football_enabled": self.football_enabled,
                 "football_provider": self.football_provider,
