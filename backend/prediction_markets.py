@@ -454,6 +454,23 @@ async def kalshi_f1_price(driver: str, start_epoch: int,
     return None
 
 
+# ---- NBA player props (Polymarket) ----
+# Per-player Over/Under lines carried as Yes/No markets inside each NBA game
+# event ("Rui Hachimura: Points O/U 17.5", sportsMarketType points/rebounds/
+# assists). There is no sharp-book source for NBA props (OddsPapi's Pinnacle
+# feed has none), and many of these books are thin with a wide bid/ask - a
+# quote can swing 10-20% with no money moving. So only liquid AND tight
+# markets are tracked: a move inside a wide spread is noise, not steam.
+NBA_PROP_TYPES = {"points": "Punti", "rebounds": "Rimbalzi", "assists": "Assist"}
+NBA_PROPS_MIN_LIQUIDITY = float(os.environ.get("NBA_PROPS_MIN_LIQUIDITY", "2000"))
+NBA_PROPS_MAX_SPREAD = float(os.environ.get("NBA_PROPS_MAX_SPREAD", "0.08"))
+# Probability band for the Over side. Polymarket ticks in whole cents, so near
+# the tails one tick is already a "drop" (0.05 -> 0.06 = -17% in decimal odds);
+# inside 25%-75% a single tick stays under ~4%, below the alert threshold, so
+# only real moves can fire. Main prop lines sit near 50% anyway.
+NBA_PROPS_PROB_BAND = (0.25, 0.75)
+
+
 # Sports tracked as pairwise "A vs. B" events on Polymarket (like WNBA
 # basketball): tag slugs + display label. UFC was removed (no Italian book
 # prices it); MLB (baseball) is the only versus-style prediction sport now.
@@ -626,6 +643,8 @@ class PredictionMarketsClient:
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int,
                                    end_epoch: int, tournament_filter=None):
+        if sport == "nba_props":
+            return await self._get_nba_props(start_epoch, end_epoch)
         if sport in VERSUS_SPORTS:
             return await self._get_versus_matches(sport, start_epoch, end_epoch)
         if sport != "f1":
@@ -705,6 +724,85 @@ class PredictionMarketsClient:
                     "tournament": f"F1 · {gp}",
                     "player1": gp, "player2": mlabel,
                     "start_epoch": start_ts,
+                    "selections": selections,
+                })
+        return out
+
+    async def _get_nba_props(self, start_epoch: int, end_epoch: int) -> list[dict]:
+        """NBA player props for the games starting in the window: one match
+        per game, each prop line contributing an Over and an Under selection
+        (decimal odds = 1 / price). Only markets with >= NBA_PROPS_MIN_LIQUIDITY
+        of book and a bid/ask spread <= NBA_PROPS_MAX_SPREAD are kept."""
+        try:
+            events = await _gamma_events(
+                "nba", start_time_min=_iso(start_epoch), start_time_max=_iso(end_epoch))
+        except Exception:
+            return []
+        out: list[dict] = []
+        for e in events:
+            teams = re.split(r"\s+vs\.?\s+", str(e.get("title") or ""), flags=re.I)
+            if len(teams) != 2:
+                continue
+            selections: list[dict] = []
+            game_ts: int | None = None
+            for m in e.get("markets") or []:
+                ptype = m.get("sportsMarketType")
+                if ptype not in NBA_PROP_TYPES:
+                    continue
+                ts = _parse_ts(m.get("gameStartTime")) or _parse_ts(e.get("startTime"))
+                if ts is None or not (start_epoch < ts <= end_epoch):
+                    continue
+                if _market_liquidity(m) < NBA_PROPS_MIN_LIQUIDITY:
+                    continue
+                try:
+                    bid, ask = float(m.get("bestBid")), float(m.get("bestAsk"))
+                except (TypeError, ValueError):
+                    continue  # one-sided book: no reliable mid
+                if ask - bid > NBA_PROPS_MAX_SPREAD:
+                    continue
+                try:
+                    outcomes = m.get("outcomes")
+                    prices = m.get("outcomePrices")
+                    if isinstance(outcomes, str):
+                        outcomes = json.loads(outcomes)
+                    if isinstance(prices, str):
+                        prices = json.loads(prices)
+                    yes = float(prices[0])
+                    no = float(prices[1])
+                except Exception:
+                    continue
+                if not outcomes or str(outcomes[0]).lower() != "yes":
+                    continue
+                if not (NBA_PROPS_PROB_BAND[0] <= yes <= NBA_PROPS_PROB_BAND[1]):
+                    continue
+                q = str(m.get("question") or "")
+                player = q.split(":", 1)[0].strip()
+                line = m.get("line")
+                if line is None:
+                    mt = re.search(r"O/U\s+(\d+(?:\.\d+)?)", q)
+                    line = float(mt.group(1)) if mt else None
+                if not player or line is None:
+                    continue
+                line = float(line)
+                over, under = _to_decimal(yes), _to_decimal(no)
+                if not over or not under:
+                    continue
+                kind = NBA_PROP_TYPES[ptype]
+                mkey = f"prop:{ptype}:{player}"
+                mname = f"{kind} {player}"
+                selections.append({"market_key": mkey, "market_name": mname,
+                                   "outcome": "over", "point": line,
+                                   "label": f"Over {line:g}", "price": over})
+                selections.append({"market_key": mkey, "market_name": mname,
+                                   "outcome": "under", "point": line,
+                                   "label": f"Under {line:g}", "price": under})
+                game_ts = ts if game_ts is None else min(game_ts, ts)
+            if selections:
+                out.append({
+                    "match_id": f"pm-{e.get('id')}-props",
+                    "tournament": "NBA · Player props",
+                    "player1": teams[0].strip(), "player2": teams[1].strip(),
+                    "start_epoch": game_ts,
                     "selections": selections,
                 })
         return out

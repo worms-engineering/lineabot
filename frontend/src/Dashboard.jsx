@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", outright: "🏆" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -369,11 +369,15 @@ export default function Dashboard() {
     }
   };
 
-  const pmToggles = [["mlb", !!status?.mlb_enabled, "⚾"]];
-  const togglePmSport = async (key, enabled) => {
+  // [settings key, enabled, button text, display name]
+  const pmToggles = [
+    ["mlb", !!status?.mlb_enabled, "⚾", "MLB"],
+    ["nba_props", !!status?.nba_props_enabled, "🏀 PROPS", "NBA player props"],
+  ];
+  const togglePmSport = async (key, enabled, name) => {
     try {
       await axios.put(`${API}/settings`, { [`${key}_enabled`]: !enabled });
-      toast[!enabled ? "success" : "info"](`${key.toUpperCase()} ${!enabled ? "attivato" : "disattivato"}`);
+      toast[!enabled ? "success" : "info"](`${name} ${!enabled ? "attivato" : "disattivato"}`);
       await loadAll();
     } catch (e) {
       toast.error("Errore: " + (e?.response?.data?.detail || e.message));
@@ -542,12 +546,12 @@ export default function Dashboard() {
             🏎 {f1 ? "ON" : "OFF"}
           </button>
 
-          {pmToggles.map(([key, enabled, emoji]) => (
+          {pmToggles.map(([key, enabled, emoji, name]) => (
             <button
               key={key}
               data-testid={`${key}-toggle`}
-              onClick={() => togglePmSport(key, enabled)}
-              title={`Traccia ${key.toUpperCase()} su Polymarket (mercati predittivi, gratis)`}
+              onClick={() => togglePmSport(key, enabled, name)}
+              title={`Traccia ${name} su Polymarket (mercati predittivi, gratis)`}
               className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
                 enabled
                   ? "border-[#FF2D55]/40 bg-[#FF2D55]/10 text-[#FF2D55] hover:bg-[#FF2D55]/20"

@@ -126,6 +126,7 @@ class SettingsIn(BaseModel):
     volley_enabled: bool | None = None
     f1_enabled: bool | None = None
     mlb_enabled: bool | None = None
+    nba_props_enabled: bool | None = None
     outright_enabled: bool | None = None
     whale_enabled: bool | None = None
     whale_min_usd: float | None = Field(default=None, ge=0.0)
@@ -148,6 +149,7 @@ class SettingsOut(BaseModel):
     volley_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
+    nba_props_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     whale_min_usd: float
@@ -178,6 +180,7 @@ class StatusOut(BaseModel):
     volley_enabled: bool
     f1_enabled: bool
     mlb_enabled: bool
+    nba_props_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     provider: str
@@ -256,6 +259,7 @@ async def get_status():
         volley_enabled=monitor.volley_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
+        nba_props_enabled=monitor.nba_props_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
@@ -328,6 +332,7 @@ def _settings_out() -> SettingsOut:
         volley_enabled=monitor.volley_enabled,
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
+        nba_props_enabled=monitor.nba_props_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         whale_min_usd=monitor.whale_min_usd,
@@ -363,6 +368,7 @@ async def update_settings(body: SettingsIn):
         volley_enabled=body.volley_enabled,
         f1_enabled=body.f1_enabled,
         mlb_enabled=body.mlb_enabled,
+        nba_props_enabled=body.nba_props_enabled,
         outright_enabled=body.outright_enabled,
         whale_enabled=body.whale_enabled,
         whale_min_usd=body.whale_min_usd,

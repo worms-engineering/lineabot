@@ -159,6 +159,7 @@ SPORT_META = {
     "volley": {"label": "Volley", "emoji": "🏐"},
     "f1": {"label": "Formula 1", "emoji": "🏎️"},
     "mlb": {"label": "MLB", "emoji": "⚾"},
+    "nba_props": {"label": "NBA Props", "emoji": "🏀"},
     "outright": {"label": "Outright", "emoji": "🏆"},
 }
 
@@ -166,7 +167,7 @@ SPORT_META = {
 # (scanned every F1_REFRESH_SECONDS instead of every REFRESH_MINUTES). They use
 # the same 60-minute pre-match window as every other sport.
 # Limited to F1 and MLB (baseball); UFC was dropped as no Italian book prices it.
-PREDICTION_SPORTS = ("f1", "mlb")
+PREDICTION_SPORTS = ("f1", "mlb", "nba_props")
 
 # Outright (tournament-winner / award) markets on Polymarket, tracked on the
 # MAIN scan loop and - unlike everything else - with NO 60-minute window: an
@@ -251,6 +252,7 @@ class TennisMonitor:
         self.volley_enabled = True
         self.f1_enabled = True
         self.mlb_enabled = True
+        self.nba_props_enabled = True
         self.outright_enabled = True
         self._last_outright_scan: datetime | None = None
         self.whale_enabled = True
@@ -318,6 +320,8 @@ class TennisMonitor:
                 self.f1_enabled = bool(cfg["f1_enabled"])
             if "mlb_enabled" in cfg:
                 self.mlb_enabled = bool(cfg["mlb_enabled"])
+            if "nba_props_enabled" in cfg:
+                self.nba_props_enabled = bool(cfg["nba_props_enabled"])
             if "outright_enabled" in cfg:
                 self.outright_enabled = bool(cfg["outright_enabled"])
             if "whale_enabled" in cfg:
@@ -376,6 +380,7 @@ class TennisMonitor:
                             volley_enabled: bool | None = None,
                             f1_enabled: bool | None = None,
                             mlb_enabled: bool | None = None,
+                            nba_props_enabled: bool | None = None,
                             outright_enabled: bool | None = None,
                             whale_enabled: bool | None = None,
                             whale_min_usd: float | None = None,
@@ -416,6 +421,9 @@ class TennisMonitor:
         if mlb_enabled is not None:
             self.mlb_enabled = bool(mlb_enabled)
             update["mlb_enabled"] = self.mlb_enabled
+        if nba_props_enabled is not None:
+            self.nba_props_enabled = bool(nba_props_enabled)
+            update["nba_props_enabled"] = self.nba_props_enabled
         if outright_enabled is not None:
             self.outright_enabled = bool(outright_enabled)
             update["outright_enabled"] = self.outright_enabled
@@ -591,6 +599,9 @@ class TennisMonitor:
             plan.append(("f1", "prediction", None))
         if self.mlb_enabled:
             plan.append(("mlb", "prediction", None))
+        if self.nba_props_enabled:
+            # NBA player props (Polymarket, liquid + tight books only).
+            plan.append(("nba_props", "prediction", None))
         return plan
 
     def sport_enabled(self, sport: str) -> bool:
@@ -699,6 +710,7 @@ class TennisMonitor:
                 "football_provider": self.football_provider,
                 "f1_enabled": self.f1_enabled,
                 "mlb_enabled": self.mlb_enabled,
+                "nba_props_enabled": self.nba_props_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "volley_enabled": self.volley_enabled,
                 "outright_enabled": self.outright_enabled,
