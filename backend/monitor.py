@@ -172,6 +172,7 @@ SPORT_META = {
     "mlb": {"label": "MLB", "emoji": "⚾"},
     "nba_props": {"label": "NBA Props", "emoji": "🏀"},
     "props_nba": {"label": "NBA Props (book)", "emoji": "🏀"},
+    "props_seriea": {"label": "Serie A Props", "emoji": "⚽"},
     "outright": {"label": "Outright", "emoji": "🏆"},
 }
 
@@ -183,7 +184,7 @@ PREDICTION_SPORTS = ("f1", "mlb", "nba_props")
 # Everything the fast (60s) loop scans: the keyless prediction sports plus the
 # NBA book props from PropLine, whose client only spends a request while a game
 # is inside the window (one bulk call covers the whole slate).
-FAST_LOOP_SPORTS = PREDICTION_SPORTS + ("props_nba",)
+FAST_LOOP_SPORTS = PREDICTION_SPORTS + ("props_nba", "props_seriea")
 # The selectable tennis/football odds providers (the other clients are
 # sport-specific and must never be chosen there).
 ODDS_PROVIDERS = ("theoddsapi", "oddspapi")
@@ -275,6 +276,7 @@ class TennisMonitor:
         self.mlb_enabled = True
         self.nba_props_enabled = True
         self.props_nba_enabled = True
+        self.props_seriea_enabled = True
         self.outright_enabled = True
         self._last_outright_scan: datetime | None = None
         self.whale_enabled = True
@@ -346,6 +348,8 @@ class TennisMonitor:
                 self.nba_props_enabled = bool(cfg["nba_props_enabled"])
             if "props_nba_enabled" in cfg:
                 self.props_nba_enabled = bool(cfg["props_nba_enabled"])
+            if "props_seriea_enabled" in cfg:
+                self.props_seriea_enabled = bool(cfg["props_seriea_enabled"])
             if "outright_enabled" in cfg:
                 self.outright_enabled = bool(cfg["outright_enabled"])
             if "whale_enabled" in cfg:
@@ -409,6 +413,7 @@ class TennisMonitor:
                             mlb_enabled: bool | None = None,
                             nba_props_enabled: bool | None = None,
                             props_nba_enabled: bool | None = None,
+                            props_seriea_enabled: bool | None = None,
                             outright_enabled: bool | None = None,
                             whale_enabled: bool | None = None,
                             whale_min_usd: float | None = None,
@@ -456,6 +461,9 @@ class TennisMonitor:
         if props_nba_enabled is not None:
             self.props_nba_enabled = bool(props_nba_enabled)
             update["props_nba_enabled"] = self.props_nba_enabled
+        if props_seriea_enabled is not None:
+            self.props_seriea_enabled = bool(props_seriea_enabled)
+            update["props_seriea_enabled"] = self.props_seriea_enabled
         if outright_enabled is not None:
             self.outright_enabled = bool(outright_enabled)
             update["outright_enabled"] = self.outright_enabled
@@ -643,6 +651,10 @@ class TennisMonitor:
             # NBA player props from the sportsbooks via PropLine (FanDuel as
             # the tracked source, the other books shown for comparison).
             plan.append(("props_nba", "propline", None))
+        if self.props_seriea_enabled:
+            # Serie A player props (scorer / shots on target / shots) via
+            # PropLine, multi-book steam rule like the NBA props.
+            plan.append(("props_seriea", "propline", None))
         return plan
 
     def sport_enabled(self, sport: str) -> bool:
@@ -698,6 +710,11 @@ class TennisMonitor:
                     await self._notify_ip_blocked(prov)
             else:
                 self._ipblock_alerted.discard(prov)
+            if raw is None and sport not in sport_errors:
+                # The provider skipped this cycle on its own cadence (e.g.
+                # Serie A props poll every 2 min): keep the last snapshot and
+                # line state untouched rather than blanking the sport.
+                continue
             for m in raw or []:
                 m["sport"] = sport
                 m["provider"] = prov
@@ -753,6 +770,7 @@ class TennisMonitor:
                 "mlb_enabled": self.mlb_enabled,
                 "nba_props_enabled": self.nba_props_enabled,
                 "props_nba_enabled": self.props_nba_enabled,
+                "props_seriea_enabled": self.props_seriea_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "volley_enabled": self.volley_enabled,
                 "outright_enabled": self.outright_enabled,

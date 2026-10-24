@@ -128,6 +128,7 @@ class SettingsIn(BaseModel):
     mlb_enabled: bool | None = None
     nba_props_enabled: bool | None = None
     props_nba_enabled: bool | None = None
+    props_seriea_enabled: bool | None = None
     outright_enabled: bool | None = None
     whale_enabled: bool | None = None
     whale_min_usd: float | None = Field(default=None, ge=0.0)
@@ -153,6 +154,7 @@ class SettingsOut(BaseModel):
     mlb_enabled: bool
     nba_props_enabled: bool
     props_nba_enabled: bool
+    props_seriea_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     whale_min_usd: float
@@ -186,6 +188,7 @@ class StatusOut(BaseModel):
     mlb_enabled: bool
     nba_props_enabled: bool
     props_nba_enabled: bool
+    props_seriea_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     provider: str
@@ -220,7 +223,8 @@ def _quota_warning() -> str | None:
         in_use.add("oddspapi")  # hockey always runs on OddsPapi
     if monitor.volley_enabled:
         in_use.add("oddspapi")  # volleyball always runs on OddsPapi
-    if monitor.props_nba_enabled and monitor.clients["propline"].api_key:
+    if ((monitor.props_nba_enabled or monitor.props_seriea_enabled)
+            and monitor.clients["propline"].api_key):
         in_use.add("propline")  # NBA book props
     msgs = []
     for key in sorted(in_use):
@@ -268,6 +272,7 @@ async def get_status():
         mlb_enabled=monitor.mlb_enabled,
         nba_props_enabled=monitor.nba_props_enabled,
         props_nba_enabled=monitor.props_nba_enabled,
+        props_seriea_enabled=monitor.props_seriea_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
@@ -344,6 +349,7 @@ def _settings_out() -> SettingsOut:
         mlb_enabled=monitor.mlb_enabled,
         nba_props_enabled=monitor.nba_props_enabled,
         props_nba_enabled=monitor.props_nba_enabled,
+        props_seriea_enabled=monitor.props_seriea_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         whale_min_usd=monitor.whale_min_usd,
@@ -381,6 +387,7 @@ async def update_settings(body: SettingsIn):
         mlb_enabled=body.mlb_enabled,
         nba_props_enabled=body.nba_props_enabled,
         props_nba_enabled=body.props_nba_enabled,
+        props_seriea_enabled=body.props_seriea_enabled,
         outright_enabled=body.outright_enabled,
         whale_enabled=body.whale_enabled,
         whale_min_usd=body.whale_min_usd,

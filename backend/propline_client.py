@@ -1,4 +1,4 @@
-"""PropLine provider - NBA player props from the sportsbooks.
+"""PropLine provider - NBA and Serie A player props from the sportsbooks.
 
 Pinnacle prices no NBA player props on OddsPapi (verified), so props come from
 PropLine (https://prop-line.com/docs), an odds API aggregating the US books.
@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import statistics
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -31,7 +32,7 @@ import mock_data
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.prop-line.com/v1"
-SPORT_KEYS = {"props_nba": "basketball_nba"}
+SPORT_KEYS = {"props_nba": "basketball_nba", "props_seriea": "soccer_serie_a"}
 # stat market key -> Italian label for the alert.
 PROP_MARKETS = {
     "player_points": "Punti",
@@ -47,11 +48,43 @@ BOOK_LABELS = {
     "fanduel": "FanDuel", "draftkings": "DraftKings", "betmgm": "BetMGM",
     "bovada": "Bovada", "fanatics": "Fanatics", "betrivers": "BetRivers",
     "pinnacle": "Pinnacle", "unibet": "Unibet", "hardrock": "Hard Rock",
+    "thescorebet": "theScore", "novig": "Novig",
 }
 # Only track sides priced inside this decimal band: main prop lines sit around
 # 1.70-2.30, and far-off prices are thin ladders where one tick is a big "move".
 PRICE_BAND = (1.25, 5.0)
-SCHEDULE_TTL = 30 * 60
+# Schedules move rarely; an hour keeps the fixed cost at ~24 requests/day/sport.
+SCHEDULE_TTL = 60 * 60
+
+# Serie A player props. No Pinnacle and no Italian book prices them on PropLine
+# (verified live), so it's the US books. BetRivers stands for the Kambi group:
+# Unibet / BetRivers / Hard Rock post identical prices (one feed), and asking
+# for all three would count one opinion three times in the steam rule.
+SOCCER_PROP_MARKETS = {
+    "anytime_goal_scorer": "Marcatore",
+    "player_shots_on_target": "Tiri in porta",
+    "player_shots": "Tiri",
+}
+SOCCER_PROP_BOOKS = ["fanduel", "draftkings", "bovada", "fanatics", "thescorebet",
+                     "betmgm", "novig", "betrivers"]
+
+# Per-sport settings. `universe`: which lines become selections (see
+# parse_props_events); `rungs`: also read N+ ladders / YES-only lists;
+# `min_interval`: seconds between two odds requests (the fast loop runs every
+# 60s; Serie A props move slowly and each league costs its own request, so it
+# polls every 2 minutes to stay inside the free daily quota).
+PROP_SPORTS = {
+    "props_nba": {"label": "NBA", "markets": PROP_MARKETS,
+                  "books": [SOURCE_BOOK] + [b for b in CONTEXT_BOOKS if b != SOURCE_BOOK],
+                  "universe": "source", "rungs": False, "band": PRICE_BAND,
+                  "min_interval": 0},
+    "props_seriea": {"label": "Serie A", "markets": SOCCER_PROP_MARKETS,
+                     "books": SOCCER_PROP_BOOKS, "universe": "union", "rungs": True,
+                     # scorer prices run longer than NBA lines; beyond ~6.0 one
+                     # ladder tick is already a big % move
+                     "band": (1.25, 6.0),
+                     "min_interval": int(os.environ.get("PROPLINE_SOCCER_INTERVAL", "120"))},
+}
 
 # ---- Best Italian price (alert-time cross-check) ----
 # Italian ADM-licensed books PropLine carries (soccer 1X2 / O-U ladder and
@@ -208,32 +241,73 @@ def italian_prices(ev: dict, home: str, away: str, market_key: str, outcome: str
                   key=lambda x: -x["price"])
 
 
-def _two_way_props(bookmaker: dict) -> dict[tuple, float]:
-    """{(market, player, point, side): decimal price} for a book's two-way
-    Over/Under player props. Milestone rungs ("25+ Points", point null) and
-    YES-only lists have no opposite leg and are skipped."""
-    out: dict[tuple, float] = {}
+_RUNG = re.compile(r"^\s*(\d+)\s*\+")
+_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _book_props(bookmaker: dict, markets: dict, rungs: bool) -> dict[tuple, tuple]:
+    """{(market, player_key, point, side): (decimal price, display name)} for
+    one book's player props, normalized so the same bet lines up across books:
+    - two-way Over/Under (or Yes/No) with a line -> (point, over|under);
+    - milestone rung "N+ ..." -> Over N-0.5 (e.g. "2+ Shots On Target" is the
+      same bet as Over 1.5);
+    - YES-only player list (anytime scorer, "to have a shot on target") ->
+      Over 0.5, i.e. 1+.
+    `rungs=False` keeps only the two-way lines (NBA, where every book posts
+    them). The player is keyed by PropLine's cross-book `player_id` when it is
+    known, else by the normalized name (Bovada's "(BOL)" team tag stripped)."""
+    out: dict[tuple, tuple] = {}
     for mk in bookmaker.get("markets") or []:
         key = mk.get("key")
-        if key not in PROP_MARKETS or mk.get("period"):
+        if key not in markets or mk.get("period"):
             continue
         for o in mk.get("outcomes") or []:
-            side = str(o.get("name") or "").lower()
-            player = str(o.get("description") or "").strip()
+            name = str(o.get("name") or "").strip()
+            n = name.lower()
             point = o.get("point")
-            if side not in ("over", "under") or not player or point is None:
+            display = _PAREN.sub("", str(o.get("description") or "").strip())
+            if point is not None and n in ("over", "under", "yes", "no"):
+                side = "over" if n in ("over", "yes") else "under"
+                pt = float(point)
+            elif not rungs:
                 continue
+            elif _RUNG.match(name):
+                side, pt = "over", int(_RUNG.match(name).group(1)) - 0.5
+            elif n in ("yes", "no"):
+                side, pt = ("over" if n == "yes" else "under"), 0.5
+            else:  # YES-only list: the outcome name is the player
+                side, pt = "over", 0.5
+                display = display or _PAREN.sub("", name)
+            if not display:
+                continue
+            pkey = o.get("player_id") or _norm(display)
             dec = _outcome_decimal(o)
             if dec:
-                out[(key, player, float(point), side)] = dec
+                out[(key, pkey, pt, side)] = (dec, display)
     return out
 
 
+def _side_label(mkey: str, point: float, side: str) -> str:
+    if mkey == "anytime_goal_scorer" and point == 0.5:
+        return "Segna" if side == "over" else "Non segna"
+    return f"{'Over' if side == 'over' else 'Under'} {point:g}"
+
+
 def parse_props_events(events: list, start_epoch: int, end_epoch: int,
-                       source_book: str = SOURCE_BOOK) -> list[dict]:
+                       source_book: str = SOURCE_BOOK,
+                       sport: str = "props_nba") -> list[dict]:
     """Normalize a bulk /odds payload into monitor matches: one match per game
-    starting in (start_epoch, end_epoch], one selection per source-book prop
-    side, each carrying the other books' prices for the same prop."""
+    starting in (start_epoch, end_epoch], one selection per prop side, each
+    carrying every book's price for it (`book_prices`, for the multi-book
+    steam rule) and the non-source books' prices for the alert (`others`).
+
+    NBA ("source" universe): the lines the source book posts, both sides
+    required. Serie A ("union" universe): every line quoted by at least two
+    books - the books cover different players, and the steam rule needs two
+    anyway."""
+    conf = PROP_SPORTS[sport]
+    markets = conf["markets"]
+    band = conf["band"]
     out: list[dict] = []
     for ev in events or []:
         if ev.get("live"):
@@ -241,40 +315,43 @@ def parse_props_events(events: list, start_epoch: int, end_epoch: int,
         st = _iso_epoch(ev.get("commence_time"))
         if st is None or not (start_epoch < st <= end_epoch):
             continue
-        books = {b.get("key"): _two_way_props(b) for b in ev.get("bookmakers") or []}
+        books = {b.get("key"): _book_props(b, markets, conf["rungs"])
+                 for b in ev.get("bookmakers") or []}
         src = books.get(source_book) or {}
+        if conf["universe"] == "source":
+            keys = [k for k in src
+                    if (k[0], k[1], k[2], "under" if k[3] == "over" else "over") in src]
+        else:
+            count: dict[tuple, int] = {}
+            for props in books.values():
+                for k in props:
+                    count[k] = count.get(k, 0) + 1
+            keys = [k for k, c in count.items() if c >= 2]
         selections: list[dict] = []
-        for (mkey, player, point, side), price in src.items():
-            # Both sides must be on the board: a one-sided prop is a line the
-            # book is pulling or hasn't fully posted.
-            other_side = "under" if side == "over" else "over"
-            if (mkey, player, point, other_side) not in src:
+        for k in keys:
+            mkey, pkey, point, side = k
+            book_prices = {bk: props[k][0] for bk, props in books.items() if k in props}
+            price = (src[k][0] if k in src
+                     else statistics.median(list(book_prices.values())))
+            if not (band[0] <= price <= band[1]):
                 continue
-            if not (PRICE_BAND[0] <= price <= PRICE_BAND[1]):
-                continue
-            others = [{"book": _book_label(bk), "price": props[(mkey, player, point, side)]}
-                      for bk, props in books.items()
-                      if bk != source_book and (mkey, player, point, side) in props]
-            # Every book's price for this exact prop (source included), keyed
-            # by book: the monitor's multi-book steam rule tracks each one.
-            book_prices = {bk: props[(mkey, player, point, side)]
-                           for bk, props in books.items()
-                           if (mkey, player, point, side) in props}
-            label_side = "Over" if side == "over" else "Under"
+            display = (src.get(k) or next(props[k] for props in books.values() if k in props))[1]
+            others = [{"book": _book_label(bk), "price": p}
+                      for bk, p in book_prices.items() if bk != source_book]
             selections.append({
-                "market_key": f"prop:{mkey}:{player}",
-                "market_name": f"{PROP_MARKETS[mkey]} {player}",
+                "market_key": f"prop:{mkey}:{pkey}",
+                "market_name": f"{markets[mkey]} {display}",
                 "outcome": side,
                 "point": point,
-                "label": f"{label_side} {point:g}",
-                "price": price,
+                "label": _side_label(mkey, point, side),
+                "price": round(price, 3),
                 "others": others,
                 "book_prices": book_prices,
             })
         if selections:
             out.append({
                 "match_id": f"pl-{ev.get('id')}",
-                "tournament": f"NBA · Player props ({_book_label(source_book)})",
+                "tournament": f"{conf['label']} · Player props",
                 "player1": ev.get("home_team"),
                 "player2": ev.get("away_team"),
                 "start_epoch": st,
@@ -298,6 +375,8 @@ class PropLineClient:
         self._schedule: dict[str, tuple[float, list[int]]] = {}
         self._warned_no_key = False
         self._sports_list: tuple[float, list[dict]] | None = None
+        # sport -> monotonic time of its last odds request (per-sport cadence)
+        self._last_fetch: dict[str, float] = {}
         # sport_key -> (monotonic fetch time, Italian-book events)
         self._it_cache: dict[str, tuple[float, list[dict]]] = {}
 
@@ -409,21 +488,29 @@ class PropLineClient:
         return None
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int, end_epoch: int,
-                                   tournament_filter=None) -> list[dict]:
+                                   tournament_filter=None) -> list[dict] | None:
+        """Props matches for the window, [] when nothing is in it, or None when
+        this sport's own cadence (min_interval) says not to poll yet - the
+        monitor then keeps the previous snapshot instead of blanking it."""
         sport_key = SPORT_KEYS.get(sport)
-        if sport_key is None:
+        conf = PROP_SPORTS.get(sport)
+        if sport_key is None or conf is None:
             return []
         if self.use_mock:
             return mock_data.build_mock_pinnacle_matches("basketball", start_epoch, end_epoch)
         if not self.api_key:
             if not self._warned_no_key:
-                logger.info("PropLine key not set: NBA book props are idle")
+                logger.info("PropLine key not set: book props are idle")
                 self._warned_no_key = True
             return []
         if not any(start_epoch < t <= end_epoch for t in await self._game_times(sport_key)):
             return []  # no game in the window: don't spend a request
-        books = ",".join([SOURCE_BOOK] + [b for b in CONTEXT_BOOKS if b != SOURCE_BOOK])
+        now = time.monotonic()
+        last = self._last_fetch.get(sport)
+        if last is not None and now - last < conf["min_interval"]:
+            return None
+        self._last_fetch[sport] = now
         data = await self._get(f"/sports/{sport_key}/odds", {
-            "markets": ",".join(PROP_MARKETS), "bookmakers": books})
+            "markets": ",".join(conf["markets"]), "bookmakers": ",".join(conf["books"])})
         events = data if isinstance(data, list) else (data or {}).get("data") or []
-        return parse_props_events(events, start_epoch, end_epoch)
+        return parse_props_events(events, start_epoch, end_epoch, sport=sport)

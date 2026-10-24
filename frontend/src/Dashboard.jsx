@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", outright: "🏆" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -374,8 +374,10 @@ export default function Dashboard() {
     ["mlb", !!status?.mlb_enabled, "⚾", "MLB", "Traccia MLB su Polymarket (mercati predittivi, gratis)"],
     ["nba_props", !!status?.nba_props_enabled, "🏀 PROPS PM", "NBA player props (Polymarket)",
       "Traccia i player props NBA su Polymarket (solo book liquidi, gratis)"],
-    ["props_nba", !!status?.props_nba_enabled, "🏀 PROPS FD", "NBA player props (FanDuel)",
-      "Traccia i player props NBA dei bookmaker via PropLine (FanDuel + confronto altri book). Serve la key PropLine."],
+    ["props_nba", !!status?.props_nba_enabled, "🏀 PROPS FD", "NBA player props (book)",
+      "Player props NBA dei bookmaker via PropLine: alert solo se 2+ book muovono insieme. Serve la key PropLine."],
+    ["props_seriea", !!status?.props_seriea_enabled, "⚽ PROPS", "Serie A player props",
+      "Marcatore, tiri in porta e tiri della Serie A via PropLine (book USA): alert solo se 2+ book muovono insieme. Serve la key PropLine."],
   ];
   const togglePmSport = async (key, enabled, name) => {
     try {
