@@ -59,8 +59,7 @@ SCHEDULE_TTL = 30 * 60
 ITALY_BOOKS = {"snai": "Snai", "eurobet": "Eurobet", "admiralbet": "AdmiralBet"}
 # OddsPapi tournament-name substring -> PropLine sport key. First match wins, so
 # "brasileiro serie a" must precede the generic "serie a" (Italy). Anything not
-# listed (e.g. the UEFA cups, whose keys the docs don't spell out) is resolved by
-# title against /v1/sports (see _sport_key_for).
+# listed is resolved by title against /v1/sports (see _sport_key_for).
 SOCCER_SPORT_KEYS = [
     ("brasileiro serie a", "soccer_brasileirao"),
     ("liga profesional", "soccer_argentina_primera"),
@@ -74,6 +73,11 @@ SOCCER_SPORT_KEYS = [
     ("ligue 1", "soccer_ligue_1"),
     ("eredivisie", "soccer_eredivisie"),
     ("liga portugal", "soccer_primeira_liga"),
+    # UEFA cups (keys verified live on /v1/sports, 2026-10-24); "women" editions
+    # never reach here because the women's tournaments aren't on PropLine.
+    ("champions league", "soccer_uefa_champions_league"),
+    ("europa league", "soccer_uefa_europa_league"),
+    ("conference league", "soccer_uefa_conference_league"),
 ]
 XCHECK_TTL = 60.0              # share one odds read between alerts of a scan
 SPORTS_LIST_TTL = 24 * 3600.0  # /v1/sports barely changes
