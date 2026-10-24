@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -50,6 +52,34 @@ BOOK_LABELS = {
 # 1.70-2.30, and far-off prices are thin ladders where one tick is a big "move".
 PRICE_BAND = (1.25, 5.0)
 SCHEDULE_TTL = 30 * 60
+
+# ---- Best Italian price (alert-time cross-check) ----
+# Italian ADM-licensed books PropLine carries (soccer 1X2 / O-U ladder and
+# tennis singles, pregame), verified live on /v1/freshness.
+ITALY_BOOKS = {"snai": "Snai", "eurobet": "Eurobet", "admiralbet": "AdmiralBet"}
+# OddsPapi tournament-name substring -> PropLine sport key. First match wins, so
+# "brasileiro serie a" must precede the generic "serie a" (Italy). Anything not
+# listed (e.g. the UEFA cups, whose keys the docs don't spell out) is resolved by
+# title against /v1/sports (see _sport_key_for).
+SOCCER_SPORT_KEYS = [
+    ("brasileiro serie a", "soccer_brasileirao"),
+    ("liga profesional", "soccer_argentina_primera"),
+    ("liga mx", "soccer_liga_mx"),
+    ("uefa nations league", "soccer_uefa_nations_league"),
+    ("premier league", "soccer_epl"),
+    ("laliga", "soccer_la_liga"),
+    ("la liga", "soccer_la_liga"),
+    ("serie a", "soccer_serie_a"),
+    ("bundesliga", "soccer_bundesliga"),
+    ("ligue 1", "soccer_ligue_1"),
+    ("eredivisie", "soccer_eredivisie"),
+    ("liga portugal", "soccer_primeira_liga"),
+]
+XCHECK_TTL = 60.0              # share one odds read between alerts of a scan
+SPORTS_LIST_TTL = 24 * 3600.0  # /v1/sports barely changes
+# How far the PropLine kickoff may sit from the provider's start time.
+# Tennis start times are loose (order-of-play), football ones are exact.
+START_TOLERANCE = {"football": 30 * 60, "tennis": 3 * 3600}
 
 
 def _book_label(key: str) -> str:
@@ -88,6 +118,90 @@ def _iso_epoch(value) -> int | None:
         return int(dt.timestamp())
     except ValueError:
         return None
+
+
+def _norm(s) -> str:
+    """Lowercase, accent-free, punctuation-free; OddsPapi's 'Last, First' is
+    turned into 'First Last' so tennis names line up across providers."""
+    s = str(s or "").strip().lower()
+    if "," in s:
+        last, _, first = s.partition(",")
+        s = f"{first.strip()} {last.strip()}"
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", s).split())
+
+
+_GENERIC = {"fc", "cf", "ac", "sc", "afc", "cd", "ud", "sd", "fk", "sk", "ss", "us",
+            "as", "club", "de", "the", "real", "city", "united", "calcio", "1"}
+
+
+def _same_side(a, b, sport: str) -> bool:
+    """Same team/player across providers. Tennis: equal names or equal surname
+    (last word). Football: equal names, one contained in the other, or a shared
+    distinctive word (OddsPapi short names vs bookmaker full names)."""
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if sport == "tennis":
+        return na.split()[-1] == nb.split()[-1]
+    if na in nb or nb in na:
+        return True
+    wa = {w for w in na.split() if len(w) >= 3 and w not in _GENERIC}
+    wb = {w for w in nb.split() if len(w) >= 3 and w not in _GENERIC}
+    return bool(wa & wb)
+
+
+def italian_prices(ev: dict, home: str, away: str, market_key: str, outcome: str,
+                   point, sport: str) -> list[dict]:
+    """[{bookmaker, price}] from the Italian books for one selection of the
+    event, best first. `outcome`: home/away/draw for h2h, over/under for totals
+    (the provider's orientation; flipped if PropLine lists the teams the other
+    way round)."""
+    flipped = (_same_side(home, ev.get("away_team"), sport)
+               and _same_side(away, ev.get("home_team"), sport)
+               and not _same_side(home, ev.get("home_team"), sport))
+    want = outcome.lower()
+    if market_key == "h2h" and flipped and want in ("home", "away"):
+        want = "away" if want == "home" else "home"
+    team_name = {"home": ev.get("home_team"), "away": ev.get("away_team")}.get(want)
+    prices: list[dict] = []
+    for b in ev.get("bookmakers") or []:
+        label = ITALY_BOOKS.get(b.get("key"))
+        if not label:
+            continue
+        for mk in b.get("markets") or []:
+            if mk.get("key") != market_key or mk.get("period") or mk.get("team"):
+                continue  # period lines and team totals share the key
+            for o in mk.get("outcomes") or []:
+                name = str(o.get("name") or "")
+                if market_key == "h2h":
+                    side = o.get("side")
+                    if side:
+                        ok = side == want
+                    elif want == "draw":
+                        ok = name.lower() in ("draw", "x", "pareggio")
+                    else:
+                        ok = bool(team_name) and _same_side(name, team_name, sport)
+                else:
+                    try:
+                        ok = (name.lower() == want and point is not None
+                              and abs(float(o.get("point")) - float(point)) < 1e-9)
+                    except (TypeError, ValueError):
+                        ok = False
+                if not ok:
+                    continue
+                dec = _outcome_decimal(o)
+                if dec:
+                    prices.append({"bookmaker": label, "price": dec})
+                break
+    best: dict[str, float] = {}
+    for p in prices:  # one price per book (its best if it lists duplicates)
+        best[p["bookmaker"]] = max(best.get(p["bookmaker"], 0.0), p["price"])
+    return sorted(({"bookmaker": k, "price": v} for k, v in best.items()),
+                  key=lambda x: -x["price"])
 
 
 def _two_way_props(bookmaker: dict) -> dict[tuple, float]:
@@ -173,6 +287,9 @@ class PropLineClient:
         # sport_key -> (monotonic fetch time, [commence epochs])
         self._schedule: dict[str, tuple[float, list[int]]] = {}
         self._warned_no_key = False
+        self._sports_list: tuple[float, list[dict]] | None = None
+        # sport_key -> (monotonic fetch time, Italian-book events)
+        self._it_cache: dict[str, tuple[float, list[dict]]] = {}
 
     async def close(self):
         await self._client.aclose()
@@ -216,6 +333,70 @@ class PropLineClient:
         times = [t for t in (_iso_epoch(e.get("commence_time")) for e in events) if t]
         self._schedule[sport_key] = (now, times)
         return times
+
+    async def _sport_key_for(self, sport: str, tournament: str | None) -> str | None:
+        """PropLine sport key for a provider match: 'tennis' for tennis; for
+        football the SOCCER_SPORT_KEYS table, else a title match against
+        /v1/sports (cached a day) - that is how the UEFA cups resolve."""
+        if sport == "tennis":
+            return "tennis"
+        if sport != "football":
+            return None
+        t = (tournament or "").lower()
+        for pat, key in SOCCER_SPORT_KEYS:
+            if pat in t:
+                return key
+        now = time.monotonic()
+        if self._sports_list is None or now - self._sports_list[0] >= SPORTS_LIST_TTL:
+            data = await self._get("/sports")
+            self._sports_list = (now, data if isinstance(data, list) else [])
+        tn = _norm(t)
+        for s in self._sports_list[1]:
+            key = str(s.get("key") or "")
+            title = _norm(re.sub(r"\(.*?\)", "", str(s.get("title") or "")))
+            if not key.startswith("soccer_") or "women" in title or len(title) < 6:
+                continue
+            if title in tn or tn in title:
+                return key
+        return None
+
+    async def _italian_odds(self, sport_key: str) -> list[dict]:
+        now = time.monotonic()
+        hit = self._it_cache.get(sport_key)
+        if hit is not None and now - hit[0] < XCHECK_TTL:
+            return hit[1]
+        data = await self._get(f"/sports/{sport_key}/odds", {
+            "markets": "h2h,totals", "bookmakers": ",".join(ITALY_BOOKS)})
+        events = data if isinstance(data, list) else (data or {}).get("data") or []
+        self._it_cache[sport_key] = (now, events)
+        return events
+
+    async def best_italian_price(self, sport: str, tournament: str | None,
+                                 start_epoch: int, home: str, away: str,
+                                 market_key: str, outcome: str, point) -> list[dict] | None:
+        """Italian-book prices (Snai/Eurobet/AdmiralBet, best first) for the
+        alerted selection, or None. One bulk request per league, shared by
+        every alert of that league within XCHECK_TTL."""
+        if (not self.api_key or self.use_mock or self.quota_exhausted
+                or market_key not in ("h2h", "totals")):
+            return None
+        sport_key = await self._sport_key_for(sport, tournament)
+        if sport_key is None:
+            return None
+        tol = START_TOLERANCE.get(sport, 30 * 60)
+        for ev in await self._italian_odds(sport_key):
+            st = _iso_epoch(ev.get("commence_time"))
+            if st is None or abs(st - start_epoch) > tol:
+                continue
+            straight = (_same_side(home, ev.get("home_team"), sport)
+                        and _same_side(away, ev.get("away_team"), sport))
+            swapped = (_same_side(home, ev.get("away_team"), sport)
+                       and _same_side(away, ev.get("home_team"), sport))
+            if not (straight or swapped):
+                continue
+            prices = italian_prices(ev, home, away, market_key, outcome, point, sport)
+            return prices or None
+        return None
 
     async def get_pinnacle_matches(self, sport: str, start_epoch: int, end_epoch: int,
                                    tournament_filter=None) -> list[dict]:

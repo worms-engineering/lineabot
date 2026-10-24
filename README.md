@@ -144,6 +144,8 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
 - `PROPLINE_API_KEY` — key PropLine (prop-line.com, free 1.000 richieste/giorno) per i player props NBA
   dei bookmaker; impostabile anche dalla dashboard (Settings → PropLine key). `PROPLINE_SOURCE_BOOK`
   sceglie il book tracciato (default `fanduel`); gli altri book compaiono nell'alert per confronto
+  La stessa key fornisce anche il **miglior prezzo ITA** negli alert di calcio e tennis (Snai, Eurobet,
+  AdmiralBet), unito ai book .it di The Odds API
 - `NBA_PROPS_MIN_LIQUIDITY` / `NBA_PROPS_MAX_SPREAD` — filtro dei player props NBA su Polymarket:
   liquidità minima del book (default 2000 $) e spread bid/ask massimo (default 0.08)
 - `FIXTURES_CACHE_TTL` — secondi di cache del calendario OddsPapi (default 1800); le quote

@@ -1065,6 +1065,9 @@ class TennisMonitor:
         """Cross-check prices for the alerted selection, right now:
         - football: best Italy-book price + Betfair EX via The Odds API
           (one request) plus Polymarket;
+        - football + tennis: Italian books Snai/Eurobet/AdmiralBet via PropLine
+          (h2h and totals), merged with The Odds API's .it books into one
+          "best Italian price";
         - basketball: Polymarket + Kalshi (keyless, quota-free).
         Best-effort: every failure just omits its piece from the alert."""
         start_epoch = match.get("start_epoch")
@@ -1086,6 +1089,22 @@ class TennisMonitor:
                     ctx.update(r)
             except Exception as e:
                 logger.warning("oddsapi alert context failed: %s", e)
+
+        pl_prices: list[dict] = []
+
+        async def propline_it_lookup() -> None:
+            client = self.clients.get("propline")
+            if (client is None or sport not in ("football", "tennis")
+                    or sel["market_key"] not in ("h2h", "totals")):
+                return
+            try:
+                r = await client.best_italian_price(
+                    sport, match.get("tournament"), start_epoch, home, away,
+                    sel["market_key"], outcome, sel.get("point"))
+                if r:
+                    pl_prices.extend(r)
+            except Exception as e:
+                logger.warning("propline italian price failed: %s", e)
 
         side = {"home": home, "away": away}.get(outcome)
         if sel["market_key"] != "h2h" or not side:
@@ -1123,7 +1142,19 @@ class TennisMonitor:
                 logger.warning("kalshi lookup failed: %s", e)
 
         await asyncio.gather(oddsapi_lookup(), pm_lookup(), kalshi_lookup(),
-                             kalshi_f1_lookup())
+                             kalshi_f1_lookup(), propline_it_lookup())
+        # One "best Italian price" across both sources (The Odds API .it books +
+        # PropLine's Snai/Eurobet/AdmiralBet); the runners-up are kept for the
+        # alert so the whole Italian board is visible.
+        it_all = list(pl_prices)
+        if ctx.get("best_it"):
+            it_all.append(ctx["best_it"])
+        if it_all:
+            it_all.sort(key=lambda x: -x["price"])
+            ctx["best_it"] = it_all[0]
+            others = [x for x in it_all[1:] if x["bookmaker"] != it_all[0]["bookmaker"]]
+            if others:
+                ctx["it_others"] = others[:3]
         return ctx or None
 
     async def _notify_quota_exhausted(self, provider: str):
@@ -1168,6 +1199,10 @@ class TennisMonitor:
             extra += (f"\n🇮🇹 Miglior prezzo ITA: <b>{esc(best_it['bookmaker'])}</b> "
                       f"@ <b>{best_it['price']:.2f}</b> (Pinnacle {curr:.2f}, "
                       f"{'+' if edge >= 0 else ''}{edge:.1f}%)")
+            it_others = ctx.get("it_others") or []
+            if it_others:
+                extra += "\n    altri ITA: " + " · ".join(
+                    f"{esc(o['bookmaker'])} {o['price']:.2f}" for o in it_others)
         if betfair:
             extra += f"\n📊 Betfair EX: <b>{betfair:.2f}</b>"
         pred = " · ".join(
