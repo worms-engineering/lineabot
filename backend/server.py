@@ -16,7 +16,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from monitor import PREDICTION_SPORTS, TennisMonitor
+from monitor import FAST_LOOP_SPORTS, ODDS_PROVIDERS, TennisMonitor
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -71,13 +71,13 @@ async def lifespan(app: FastAPI):
     # touching the main scan's status.
     if F1_REFRESH_SECONDS > 0:
         # The main scan leaves these sports to the fast loop.
-        monitor.fast_loop_sports = PREDICTION_SPORTS
+        monitor.fast_loop_sports = FAST_LOOP_SPORTS
         scheduler.add_job(
             monitor.scan_once,
             trigger=IntervalTrigger(seconds=F1_REFRESH_SECONDS),
             id="pm-scan",
             next_run_time=datetime.now(timezone.utc),
-            kwargs={"sports": PREDICTION_SPORTS, "update_state": False},
+            kwargs={"sports": FAST_LOOP_SPORTS, "update_state": False},
             max_instances=1,
             coalesce=True,
         )
@@ -127,6 +127,7 @@ class SettingsIn(BaseModel):
     f1_enabled: bool | None = None
     mlb_enabled: bool | None = None
     nba_props_enabled: bool | None = None
+    props_nba_enabled: bool | None = None
     outright_enabled: bool | None = None
     whale_enabled: bool | None = None
     whale_min_usd: float | None = Field(default=None, ge=0.0)
@@ -136,6 +137,7 @@ class SettingsIn(BaseModel):
     telegram_chat_id: str | None = None
     oddspapi_api_key: str | None = None
     theoddsapi_api_key: str | None = None
+    propline_api_key: str | None = None
 
 
 class SettingsOut(BaseModel):
@@ -150,6 +152,7 @@ class SettingsOut(BaseModel):
     f1_enabled: bool
     mlb_enabled: bool
     nba_props_enabled: bool
+    props_nba_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     whale_min_usd: float
@@ -162,6 +165,7 @@ class SettingsOut(BaseModel):
     # confirm which key is live without ever exposing the full value.
     oddspapi_key_hint: str | None
     theoddsapi_key_hint: str | None
+    propline_key_hint: str | None
 
 
 class StatusOut(BaseModel):
@@ -181,6 +185,7 @@ class StatusOut(BaseModel):
     f1_enabled: bool
     mlb_enabled: bool
     nba_props_enabled: bool
+    props_nba_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     provider: str
@@ -215,6 +220,8 @@ def _quota_warning() -> str | None:
         in_use.add("oddspapi")  # hockey always runs on OddsPapi
     if monitor.volley_enabled:
         in_use.add("oddspapi")  # volleyball always runs on OddsPapi
+    if monitor.props_nba_enabled and monitor.clients["propline"].api_key:
+        in_use.add("propline")  # NBA book props
     msgs = []
     for key in sorted(in_use):
         client = monitor.clients.get(key)
@@ -260,6 +267,7 @@ async def get_status():
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
         nba_props_enabled=monitor.nba_props_enabled,
+        props_nba_enabled=monitor.props_nba_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
@@ -319,9 +327,11 @@ async def set_tracking(body: TrackingIn):
 def _settings_out() -> SettingsOut:
     op_key = monitor.clients["oddspapi"].api_key
     toa_key = monitor.clients["theoddsapi"].api_key
+    pl_key = monitor.clients["propline"].api_key
     return SettingsOut(
         oddspapi_key_hint=f"…{op_key[-4:]}" if op_key else None,
         theoddsapi_key_hint=f"…{toa_key[-4:]}" if toa_key else None,
+        propline_key_hint=f"…{pl_key[-4:]}" if pl_key else None,
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
@@ -333,14 +343,15 @@ def _settings_out() -> SettingsOut:
         f1_enabled=monitor.f1_enabled,
         mlb_enabled=monitor.mlb_enabled,
         nba_props_enabled=monitor.nba_props_enabled,
+        props_nba_enabled=monitor.props_nba_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         whale_min_usd=monitor.whale_min_usd,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
-        # 'prediction' is not a tennis odds provider (F1/MLB only) and
-        # must never be selectable as the tennis/football provider.
-        providers=[k for k in monitor.clients.keys() if k != "prediction"],
+        # Only the general odds providers are selectable for tennis/football
+        # ('prediction' and 'propline' are sport-specific).
+        providers=list(ODDS_PROVIDERS),
         telegram_configured=bool(monitor.telegram.token and monitor.telegram.chat_id),
         refresh_minutes=REFRESH_MINUTES,
     )
@@ -353,9 +364,9 @@ async def get_settings():
 
 @api.put("/settings", response_model=SettingsOut)
 async def update_settings(body: SettingsIn):
-    if body.provider is not None and body.provider not in monitor.clients:
+    if body.provider is not None and body.provider not in ODDS_PROVIDERS:
         raise HTTPException(400, f"Unknown provider: {body.provider}")
-    if body.football_provider is not None and body.football_provider not in monitor.clients:
+    if body.football_provider is not None and body.football_provider not in ODDS_PROVIDERS:
         raise HTTPException(400, f"Unknown football_provider: {body.football_provider}")
     await monitor.save_settings(
         drop_threshold=body.drop_threshold,
@@ -369,6 +380,7 @@ async def update_settings(body: SettingsIn):
         f1_enabled=body.f1_enabled,
         mlb_enabled=body.mlb_enabled,
         nba_props_enabled=body.nba_props_enabled,
+        props_nba_enabled=body.props_nba_enabled,
         outright_enabled=body.outright_enabled,
         whale_enabled=body.whale_enabled,
         whale_min_usd=body.whale_min_usd,
@@ -380,6 +392,8 @@ async def update_settings(body: SettingsIn):
         if body.oddspapi_api_key is not None else None,
         theoddsapi_api_key=(body.theoddsapi_api_key.strip() or None)
         if body.theoddsapi_api_key is not None else None,
+        propline_api_key=(body.propline_api_key.strip() or None)
+        if body.propline_api_key is not None else None,
     )
     return _settings_out()
 

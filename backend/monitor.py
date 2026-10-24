@@ -23,6 +23,7 @@ from pymongo import UpdateOne
 
 from theoddsapi_client import TheOddsApiClient
 from oddspapi_client import OddsPapiClient
+from propline_client import PropLineClient
 from telegram_client import TelegramClient
 from key_rotation import generate_oddspapi_key, KeyRotationError
 import prediction_markets as pmk
@@ -160,6 +161,7 @@ SPORT_META = {
     "f1": {"label": "Formula 1", "emoji": "🏎️"},
     "mlb": {"label": "MLB", "emoji": "⚾"},
     "nba_props": {"label": "NBA Props", "emoji": "🏀"},
+    "props_nba": {"label": "NBA Props (book)", "emoji": "🏀"},
     "outright": {"label": "Outright", "emoji": "🏆"},
 }
 
@@ -168,6 +170,13 @@ SPORT_META = {
 # the same 60-minute pre-match window as every other sport.
 # Limited to F1 and MLB (baseball); UFC was dropped as no Italian book prices it.
 PREDICTION_SPORTS = ("f1", "mlb", "nba_props")
+# Everything the fast (60s) loop scans: the keyless prediction sports plus the
+# NBA book props from PropLine, whose client only spends a request while a game
+# is inside the window (one bulk call covers the whole slate).
+FAST_LOOP_SPORTS = PREDICTION_SPORTS + ("props_nba",)
+# The selectable tennis/football odds providers (the other clients are
+# sport-specific and must never be chosen there).
+ODDS_PROVIDERS = ("theoddsapi", "oddspapi")
 
 # Outright (tournament-winner / award) markets on Polymarket, tracked on the
 # MAIN scan loop and - unlike everything else - with NO 60-minute window: an
@@ -195,7 +204,8 @@ OUTRIGHT_MARKETS = [
 # outright snapshot is carried forward unchanged. Tunable via env.
 OUTRIGHT_REFRESH_SECONDS = int(os.environ.get("OUTRIGHT_REFRESH_SECONDS", str(30 * 60)))
 
-PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
+PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi",
+                   "propline": "PropLine"}
 
 # F1 multi-driver markets (race winner, podium, pole, sprint...) are shown as
 # "<GP> · <market>" instead of "A vs B" - derived from the tracked list so a
@@ -236,6 +246,7 @@ class TennisMonitor:
             "theoddsapi": TheOddsApiClient(),
             "oddspapi": OddsPapiClient(),
             "prediction": PredictionMarketsClient(),
+            "propline": PropLineClient(),
         }
         self.provider = DEFAULT_PROVIDER
         self.football_provider = "oddspapi"  # switch to "theoddsapi" later in-season
@@ -253,6 +264,7 @@ class TennisMonitor:
         self.f1_enabled = True
         self.mlb_enabled = True
         self.nba_props_enabled = True
+        self.props_nba_enabled = True
         self.outright_enabled = True
         self._last_outright_scan: datetime | None = None
         self.whale_enabled = True
@@ -322,15 +334,17 @@ class TennisMonitor:
                 self.mlb_enabled = bool(cfg["mlb_enabled"])
             if "nba_props_enabled" in cfg:
                 self.nba_props_enabled = bool(cfg["nba_props_enabled"])
+            if "props_nba_enabled" in cfg:
+                self.props_nba_enabled = bool(cfg["props_nba_enabled"])
             if "outright_enabled" in cfg:
                 self.outright_enabled = bool(cfg["outright_enabled"])
             if "whale_enabled" in cfg:
                 self.whale_enabled = bool(cfg["whale_enabled"])
             if "whale_min_usd" in cfg:
                 self.whale_min_usd = float(cfg["whale_min_usd"])
-            if cfg.get("provider") in self.clients:
+            if cfg.get("provider") in ODDS_PROVIDERS:
                 self.provider = cfg["provider"]
-            if cfg.get("football_provider") in self.clients:
+            if cfg.get("football_provider") in ODDS_PROVIDERS:
                 self.football_provider = cfg["football_provider"]
             # OddsPapi key: a key stored here (set from the dashboard, or written
             # by auto-rotation) takes precedence and wins. The ODDSPAPI_KEY env
@@ -345,6 +359,9 @@ class TennisMonitor:
             theoddsapi_key = cfg.get("theoddsapi_api_key")
             if theoddsapi_key:
                 self.clients["theoddsapi"].api_key = theoddsapi_key
+            propline_key = cfg.get("propline_api_key")
+            if propline_key:
+                self.clients["propline"].api_key = propline_key
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
             if token:
@@ -381,6 +398,7 @@ class TennisMonitor:
                             f1_enabled: bool | None = None,
                             mlb_enabled: bool | None = None,
                             nba_props_enabled: bool | None = None,
+                            props_nba_enabled: bool | None = None,
                             outright_enabled: bool | None = None,
                             whale_enabled: bool | None = None,
                             whale_min_usd: float | None = None,
@@ -389,7 +407,8 @@ class TennisMonitor:
                             telegram_token: str | None = None,
                             telegram_chat_id: str | None = None,
                             oddspapi_api_key: str | None = None,
-                            theoddsapi_api_key: str | None = None):
+                            theoddsapi_api_key: str | None = None,
+                            propline_api_key: str | None = None):
         update: dict[str, Any] = {}
         if drop_threshold is not None:
             self.drop_threshold = float(drop_threshold)
@@ -424,6 +443,9 @@ class TennisMonitor:
         if nba_props_enabled is not None:
             self.nba_props_enabled = bool(nba_props_enabled)
             update["nba_props_enabled"] = self.nba_props_enabled
+        if props_nba_enabled is not None:
+            self.props_nba_enabled = bool(props_nba_enabled)
+            update["props_nba_enabled"] = self.props_nba_enabled
         if outright_enabled is not None:
             self.outright_enabled = bool(outright_enabled)
             update["outright_enabled"] = self.outright_enabled
@@ -434,12 +456,12 @@ class TennisMonitor:
             self.whale_min_usd = float(whale_min_usd)
             update["whale_min_usd"] = self.whale_min_usd
         if provider is not None:
-            if provider not in self.clients:
+            if provider not in ODDS_PROVIDERS:
                 raise ValueError(f"unknown provider: {provider}")
             self.provider = provider
             update["provider"] = provider
         if football_provider is not None:
-            if football_provider not in self.clients:
+            if football_provider not in ODDS_PROVIDERS:
                 raise ValueError(f"unknown football_provider: {football_provider}")
             self.football_provider = football_provider
             update["football_provider"] = football_provider
@@ -459,6 +481,11 @@ class TennisMonitor:
             self.clients["theoddsapi"].quota_exhausted = False
             self._quota_alerted.discard("theoddsapi")
             update["theoddsapi_api_key"] = theoddsapi_api_key
+        if propline_api_key is not None:
+            self.clients["propline"].api_key = propline_api_key
+            self.clients["propline"].quota_exhausted = False
+            self._quota_alerted.discard("propline")
+            update["propline_api_key"] = propline_api_key
         if update:
             await self.db.settings.update_one(
                 {"_id": "config"}, {"$set": update}, upsert=True
@@ -602,6 +629,10 @@ class TennisMonitor:
         if self.nba_props_enabled:
             # NBA player props (Polymarket, liquid + tight books only).
             plan.append(("nba_props", "prediction", None))
+        if self.props_nba_enabled:
+            # NBA player props from the sportsbooks via PropLine (FanDuel as
+            # the tracked source, the other books shown for comparison).
+            plan.append(("props_nba", "propline", None))
         return plan
 
     def sport_enabled(self, sport: str) -> bool:
@@ -711,6 +742,7 @@ class TennisMonitor:
                 "f1_enabled": self.f1_enabled,
                 "mlb_enabled": self.mlb_enabled,
                 "nba_props_enabled": self.nba_props_enabled,
+                "props_nba_enabled": self.props_nba_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "volley_enabled": self.volley_enabled,
                 "outright_enabled": self.outright_enabled,
@@ -1162,6 +1194,13 @@ class TennisMonitor:
             header = "📉 STEAM Polymarket — " + esc(sport_tag)
             move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
                          f"(<b>-{drop_last * 100:.1f}%</b>) · quote Polymarket")
+        elif match.get("provider") == "propline":
+            # Sportsbook props via PropLine: the source is the tracked book
+            # (FanDuel by default), never Pinnacle.
+            book = esc(str(match.get("source_book") or "book"))
+            header = f"⬇️ DROP {book} — " + esc(sport_tag)
+            move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
+                         f"(<b>-{drop_last * 100:.1f}%</b>) · quote {book}")
         else:
             header = "⬇️ PINNACLE DROP — " + esc(sport_tag)
             move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
@@ -1184,6 +1223,11 @@ class TennisMonitor:
                 tag = code.get(s.get("outcome")) or str(s.get("label") or "")
                 parts.append(f"{esc(tag)} <b>{s['price']:.2f}</b>")
             lines.append("📊 Altre quote: " + " · ".join(parts))
+        # Same prop at the other books (PropLine selections carry them).
+        others = sel.get("others") or []
+        if others:
+            lines.append("📚 Altri book: " + " · ".join(
+                f"{esc(str(o['book']))} <b>{o['price']:.2f}</b>" for o in others))
         lines.append(f"da apertura: -{drop_from_open * 100:.1f}%{extra}")
         return "\n".join(lines)
 

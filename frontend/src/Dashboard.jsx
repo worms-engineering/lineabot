@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", outright: "🏆" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -369,10 +369,13 @@ export default function Dashboard() {
     }
   };
 
-  // [settings key, enabled, button text, display name]
+  // [settings key, enabled, button text, display name, tooltip]
   const pmToggles = [
-    ["mlb", !!status?.mlb_enabled, "⚾", "MLB"],
-    ["nba_props", !!status?.nba_props_enabled, "🏀 PROPS", "NBA player props"],
+    ["mlb", !!status?.mlb_enabled, "⚾", "MLB", "Traccia MLB su Polymarket (mercati predittivi, gratis)"],
+    ["nba_props", !!status?.nba_props_enabled, "🏀 PROPS PM", "NBA player props (Polymarket)",
+      "Traccia i player props NBA su Polymarket (solo book liquidi, gratis)"],
+    ["props_nba", !!status?.props_nba_enabled, "🏀 PROPS FD", "NBA player props (FanDuel)",
+      "Traccia i player props NBA dei bookmaker via PropLine (FanDuel + confronto altri book). Serve la key PropLine."],
   ];
   const togglePmSport = async (key, enabled, name) => {
     try {
@@ -546,12 +549,12 @@ export default function Dashboard() {
             🏎 {f1 ? "ON" : "OFF"}
           </button>
 
-          {pmToggles.map(([key, enabled, emoji, name]) => (
+          {pmToggles.map(([key, enabled, emoji, name, tip]) => (
             <button
               key={key}
               data-testid={`${key}-toggle`}
               onClick={() => togglePmSport(key, enabled, name)}
-              title={`Traccia ${name} su Polymarket (mercati predittivi, gratis)`}
+              title={tip}
               className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
                 enabled
                   ? "border-[#FF2D55]/40 bg-[#FF2D55]/10 text-[#FF2D55] hover:bg-[#FF2D55]/20"
@@ -975,6 +978,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const [chatId, setChatId] = useState("");
   const [oddspapiKey, setOddspapiKey] = useState("");
   const [theoddsapiKey, setTheoddsapiKey] = useState("");
+  const [proplineKey, setProplineKey] = useState("");
   const [whaleUsd, setWhaleUsd] = useState(25000);
   const [saving, setSaving] = useState(false);
 
@@ -995,9 +999,10 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
       if (chatId) body.telegram_chat_id = chatId;
       if (oddspapiKey.trim()) body.oddspapi_api_key = oddspapiKey.trim();
       if (theoddsapiKey.trim()) body.theoddsapi_api_key = theoddsapiKey.trim();
+      if (proplineKey.trim()) body.propline_api_key = proplineKey.trim();
       await axios.put(`${API}/settings`, body);
       toast.success("Impostazioni salvate");
-      setToken(""); setChatId(""); setOddspapiKey(""); setTheoddsapiKey("");
+      setToken(""); setChatId(""); setOddspapiKey(""); setTheoddsapiKey(""); setProplineKey("");
       await onSaved();
       setOpen(false);
     } catch (e) {
@@ -1117,6 +1122,21 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
             />
             {settings?.theoddsapi_key_hint && (
               <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Key attiva: {settings.theoddsapi_key_hint}</div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-widest text-zinc-400">PropLine key</div>
+            <div className="text-[10px] text-zinc-600">Player props NBA dei bookmaker (FanDuel + confronto). Key gratuita su prop-line.com (1.000 richieste/giorno). Lascia vuoto per non cambiare.</div>
+            <Input
+              data-testid="settings-propline-key"
+              value={proplineKey}
+              onChange={e => setProplineKey(e.target.value)}
+              placeholder="es. 99c1393f8c92..."
+              className="rounded-none bg-[#0A0A0A] border-white/20 font-mono"
+            />
+            {settings?.propline_key_hint && (
+              <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Key attiva: {settings.propline_key_hint}</div>
             )}
           </div>
 
