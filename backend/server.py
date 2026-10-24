@@ -118,6 +118,7 @@ api = APIRouter(prefix="/api")
 class SettingsIn(BaseModel):
     drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     football_drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    props_drop_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     tracking_enabled: bool | None = None
     tennis_enabled: bool | None = None
     basketball_enabled: bool | None = None
@@ -129,6 +130,7 @@ class SettingsIn(BaseModel):
     nba_props_enabled: bool | None = None
     props_nba_enabled: bool | None = None
     props_seriea_enabled: bool | None = None
+    props_epl_enabled: bool | None = None
     outright_enabled: bool | None = None
     whale_enabled: bool | None = None
     whale_min_usd: float | None = Field(default=None, ge=0.0)
@@ -144,6 +146,7 @@ class SettingsIn(BaseModel):
 class SettingsOut(BaseModel):
     drop_threshold: float
     football_drop_threshold: float
+    props_drop_threshold: float
     tracking_enabled: bool
     tennis_enabled: bool
     basketball_enabled: bool
@@ -155,6 +158,7 @@ class SettingsOut(BaseModel):
     nba_props_enabled: bool
     props_nba_enabled: bool
     props_seriea_enabled: bool
+    props_epl_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     whale_min_usd: float
@@ -178,6 +182,7 @@ class StatusOut(BaseModel):
     refresh_minutes: int
     drop_threshold: float
     football_drop_threshold: float
+    props_drop_threshold: float
     tracking_enabled: bool
     tennis_enabled: bool
     basketball_enabled: bool
@@ -189,6 +194,7 @@ class StatusOut(BaseModel):
     nba_props_enabled: bool
     props_nba_enabled: bool
     props_seriea_enabled: bool
+    props_epl_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     provider: str
@@ -223,7 +229,8 @@ def _quota_warning() -> str | None:
         in_use.add("oddspapi")  # hockey always runs on OddsPapi
     if monitor.volley_enabled:
         in_use.add("oddspapi")  # volleyball always runs on OddsPapi
-    if ((monitor.props_nba_enabled or monitor.props_seriea_enabled)
+    if ((monitor.props_nba_enabled or monitor.props_seriea_enabled
+         or monitor.props_epl_enabled)
             and monitor.clients["propline"].api_key):
         in_use.add("propline")  # NBA book props
     msgs = []
@@ -262,6 +269,7 @@ async def get_status():
         refresh_minutes=REFRESH_MINUTES,
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
+        props_drop_threshold=monitor.props_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
         tennis_enabled=monitor.tennis_enabled,
         basketball_enabled=monitor.basketball_enabled,
@@ -273,6 +281,7 @@ async def get_status():
         nba_props_enabled=monitor.nba_props_enabled,
         props_nba_enabled=monitor.props_nba_enabled,
         props_seriea_enabled=monitor.props_seriea_enabled,
+        props_epl_enabled=monitor.props_epl_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
@@ -339,6 +348,7 @@ def _settings_out() -> SettingsOut:
         propline_key_hint=f"…{pl_key[-4:]}" if pl_key else None,
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
+        props_drop_threshold=monitor.props_drop_threshold,
         tracking_enabled=monitor.tracking_enabled,
         tennis_enabled=monitor.tennis_enabled,
         basketball_enabled=monitor.basketball_enabled,
@@ -350,6 +360,7 @@ def _settings_out() -> SettingsOut:
         nba_props_enabled=monitor.nba_props_enabled,
         props_nba_enabled=monitor.props_nba_enabled,
         props_seriea_enabled=monitor.props_seriea_enabled,
+        props_epl_enabled=monitor.props_epl_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         whale_min_usd=monitor.whale_min_usd,
@@ -377,6 +388,7 @@ async def update_settings(body: SettingsIn):
     await monitor.save_settings(
         drop_threshold=body.drop_threshold,
         football_drop_threshold=body.football_drop_threshold,
+        props_drop_threshold=body.props_drop_threshold,
         tracking_enabled=body.tracking_enabled,
         tennis_enabled=body.tennis_enabled,
         basketball_enabled=body.basketball_enabled,
@@ -388,6 +400,7 @@ async def update_settings(body: SettingsIn):
         nba_props_enabled=body.nba_props_enabled,
         props_nba_enabled=body.props_nba_enabled,
         props_seriea_enabled=body.props_seriea_enabled,
+        props_epl_enabled=body.props_epl_enabled,
         outright_enabled=body.outright_enabled,
         whale_enabled=body.whale_enabled,
         whale_min_usd=body.whale_min_usd,

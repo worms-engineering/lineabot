@@ -32,7 +32,8 @@ import mock_data
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.prop-line.com/v1"
-SPORT_KEYS = {"props_nba": "basketball_nba", "props_seriea": "soccer_serie_a"}
+SPORT_KEYS = {"props_nba": "basketball_nba", "props_seriea": "soccer_serie_a",
+              "props_epl": "soccer_epl"}
 # stat market key -> Italian label for the alert.
 PROP_MARKETS = {
     "player_points": "Punti",
@@ -85,6 +86,12 @@ PROP_SPORTS = {
                      "band": (1.25, 6.0),
                      "min_interval": int(os.environ.get("PROPLINE_SOCCER_INTERVAL", "120"))},
 }
+# Premier League: same books / markets / cadence as Serie A.
+PROP_SPORTS["props_epl"] = {**PROP_SPORTS["props_seriea"], "label": "Premier League"}
+# Daily-quota guard: below this many requests left, the football props (one
+# request per league per poll) pause until the 00:00 UTC reset, so the NBA
+# props and the alert-time Italian-price lookups keep working all day.
+SOCCER_PROPS_RESERVE = int(os.environ.get("PROPLINE_SOCCER_RESERVE", "150"))
 
 # ---- Best Italian price (alert-time cross-check) ----
 # Italian ADM-licensed books PropLine carries (soccer 1X2 / O-U ladder and
@@ -509,6 +516,9 @@ class PropLineClient:
         last = self._last_fetch.get(sport)
         if last is not None and now - last < conf["min_interval"]:
             return None
+        if (sport != "props_nba" and self.requests_remaining is not None
+                and self.requests_remaining < SOCCER_PROPS_RESERVE):
+            return None  # keep the rest of today's quota for NBA + Italian prices
         self._last_fetch[sport] = now
         data = await self._get(f"/sports/{sport_key}/odds", {
             "markets": ",".join(conf["markets"]), "bookmakers": ",".join(conf["books"])})

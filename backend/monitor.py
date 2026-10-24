@@ -59,10 +59,14 @@ WHALE_AGG_SECONDS = 15 * 60
 # measurably sharper than the market on props (PropLine accuracy report, NBA:
 # every book "in line" with the consensus), so a lone book's move is not a
 # signal. A prop line alerts only when at least PROPS_STEAM_MIN_BOOKS
-# independent books have each shortened it by >= PROPS_STEAM_BOOK_MOVE since
-# they started being tracked. It re-alerts only if MORE books join the move.
+# independent books have each shortened it by >= the props drop threshold
+# since they started being tracked AND the consensus (median across every book
+# quoting the line) has moved by the same threshold - two books out of seven
+# moving while the rest hold is not market steam. It re-alerts only if MORE
+# books join. The threshold is the dashboard "props" slider
+# (props_drop_threshold); PROPS_STEAM_BOOK_MOVE only seeds its default.
 PROPS_STEAM_MIN_BOOKS = int(os.environ.get("PROPS_STEAM_MIN_BOOKS", "2"))
-PROPS_STEAM_BOOK_MOVE = float(os.environ.get("PROPS_STEAM_BOOK_MOVE", "0.04"))
+PROPS_STEAM_BOOK_MOVE = float(os.environ.get("PROPS_STEAM_BOOK_MOVE", "0.08"))
 # Drop alerts are sent before the cross-checks; the cross-checks then have this
 # long to come back and be edited into the message.
 ALERT_CONTEXT_TIMEOUT = 20
@@ -173,6 +177,7 @@ SPORT_META = {
     "nba_props": {"label": "NBA Props", "emoji": "🏀"},
     "props_nba": {"label": "NBA Props (book)", "emoji": "🏀"},
     "props_seriea": {"label": "Serie A Props", "emoji": "⚽"},
+    "props_epl": {"label": "Premier League Props", "emoji": "⚽"},
     "outright": {"label": "Outright", "emoji": "🏆"},
 }
 
@@ -184,7 +189,7 @@ PREDICTION_SPORTS = ("f1", "mlb", "nba_props")
 # Everything the fast (60s) loop scans: the keyless prediction sports plus the
 # NBA book props from PropLine, whose client only spends a request while a game
 # is inside the window (one bulk call covers the whole slate).
-FAST_LOOP_SPORTS = PREDICTION_SPORTS + ("props_nba", "props_seriea")
+FAST_LOOP_SPORTS = PREDICTION_SPORTS + ("props_nba", "props_seriea", "props_epl")
 # The selectable tennis/football odds providers (the other clients are
 # sport-specific and must never be chosen there).
 ODDS_PROVIDERS = ("theoddsapi", "oddspapi")
@@ -266,6 +271,8 @@ class TennisMonitor:
         # basketball, which was flooding alerts at the same 5% default -
         # independently configurable, defaults to the same value as tennis/basket.
         self.football_drop_threshold = drop_threshold
+        # Sportsbook props (PropLine) steam threshold - per book AND consensus.
+        self.props_drop_threshold = PROPS_STEAM_BOOK_MOVE
         self.tracking_enabled = True
         self.tennis_enabled = True
         self.basketball_enabled = True
@@ -277,6 +284,7 @@ class TennisMonitor:
         self.nba_props_enabled = True
         self.props_nba_enabled = True
         self.props_seriea_enabled = True
+        self.props_epl_enabled = True
         self.outright_enabled = True
         self._last_outright_scan: datetime | None = None
         self.whale_enabled = True
@@ -328,6 +336,8 @@ class TennisMonitor:
             self.football_drop_threshold = float(
                 cfg.get("football_drop_threshold", self.football_drop_threshold)
             )
+            self.props_drop_threshold = float(
+                cfg.get("props_drop_threshold", self.props_drop_threshold))
             if "tracking_enabled" in cfg:
                 self.tracking_enabled = bool(cfg["tracking_enabled"])
             if "tennis_enabled" in cfg:
@@ -350,6 +360,8 @@ class TennisMonitor:
                 self.props_nba_enabled = bool(cfg["props_nba_enabled"])
             if "props_seriea_enabled" in cfg:
                 self.props_seriea_enabled = bool(cfg["props_seriea_enabled"])
+            if "props_epl_enabled" in cfg:
+                self.props_epl_enabled = bool(cfg["props_epl_enabled"])
             if "outright_enabled" in cfg:
                 self.outright_enabled = bool(cfg["outright_enabled"])
             if "whale_enabled" in cfg:
@@ -403,6 +415,7 @@ class TennisMonitor:
 
     async def save_settings(self, drop_threshold: float | None = None,
                             football_drop_threshold: float | None = None,
+                            props_drop_threshold: float | None = None,
                             tracking_enabled: bool | None = None,
                             tennis_enabled: bool | None = None,
                             basketball_enabled: bool | None = None,
@@ -414,6 +427,7 @@ class TennisMonitor:
                             nba_props_enabled: bool | None = None,
                             props_nba_enabled: bool | None = None,
                             props_seriea_enabled: bool | None = None,
+                            props_epl_enabled: bool | None = None,
                             outright_enabled: bool | None = None,
                             whale_enabled: bool | None = None,
                             whale_min_usd: float | None = None,
@@ -431,6 +445,9 @@ class TennisMonitor:
         if football_drop_threshold is not None:
             self.football_drop_threshold = float(football_drop_threshold)
             update["football_drop_threshold"] = self.football_drop_threshold
+        if props_drop_threshold is not None:
+            self.props_drop_threshold = float(props_drop_threshold)
+            update["props_drop_threshold"] = self.props_drop_threshold
         if tracking_enabled is not None:
             self.tracking_enabled = bool(tracking_enabled)
             update["tracking_enabled"] = self.tracking_enabled
@@ -464,6 +481,9 @@ class TennisMonitor:
         if props_seriea_enabled is not None:
             self.props_seriea_enabled = bool(props_seriea_enabled)
             update["props_seriea_enabled"] = self.props_seriea_enabled
+        if props_epl_enabled is not None:
+            self.props_epl_enabled = bool(props_epl_enabled)
+            update["props_epl_enabled"] = self.props_epl_enabled
         if outright_enabled is not None:
             self.outright_enabled = bool(outright_enabled)
             update["outright_enabled"] = self.outright_enabled
@@ -655,6 +675,8 @@ class TennisMonitor:
             # Serie A player props (scorer / shots on target / shots) via
             # PropLine, multi-book steam rule like the NBA props.
             plan.append(("props_seriea", "propline", None))
+        if self.props_epl_enabled:
+            plan.append(("props_epl", "propline", None))
         return plan
 
     def sport_enabled(self, sport: str) -> bool:
@@ -771,11 +793,13 @@ class TennisMonitor:
                 "nba_props_enabled": self.nba_props_enabled,
                 "props_nba_enabled": self.props_nba_enabled,
                 "props_seriea_enabled": self.props_seriea_enabled,
+                "props_epl_enabled": self.props_epl_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "volley_enabled": self.volley_enabled,
                 "outright_enabled": self.outright_enabled,
                 "drop_threshold": self.drop_threshold,
                 "football_drop_threshold": self.football_drop_threshold,
+                "props_drop_threshold": self.props_drop_threshold,
                 "tracking_enabled": self.tracking_enabled,
             }, "$unset": {"matches": ""}},
             upsert=True,
@@ -928,14 +952,21 @@ class TennisMonitor:
                         if bk not in b_open or n <= 2:
                             b_open[bk] = p
                         b_obs[bk] = n
+                    pth = self.props_drop_threshold
                     for bk, p in book_prices.items():
                         o = b_open.get(bk)
-                        if b_obs[bk] >= 3 and o and p < o and (o - p) / o >= PROPS_STEAM_BOOK_MOVE:
+                        if b_obs[bk] >= 3 and o and p < o and (o - p) / o >= pth:
                             steam_moves.append({"book": pl_book_label(bk), "from": o, "to": p,
                                                 "move": (o - p) / o})
+                    # Consensus over the books with a settled baseline.
+                    settled = [bk for bk in book_prices if b_obs[bk] >= 3 and b_open.get(bk)]
+                    c_open = statistics.median([b_open[bk] for bk in settled]) if settled else 0.0
+                    c_now = statistics.median([book_prices[bk] for bk in settled]) if settled else 0.0
+                    c_move = (c_open - c_now) / c_open if c_open and c_now < c_open else 0.0
                     alerted = int((prev or {}).get("steam_alerted", 0))
                     if (prev and observations >= 3 and fresh and not suspect_live
                             and len(steam_moves) >= PROPS_STEAM_MIN_BOOKS
+                            and c_move >= pth
                             and len(steam_moves) > alerted):
                         is_drop = True
                     steam_extra = {"book_open": b_open, "book_obs": b_obs,
@@ -995,12 +1026,8 @@ class TennisMonitor:
                     if steam_moves:
                         # The alert reports the consensus (median across the
                         # books) move and lists every book that moved.
-                        bp = sel.get("book_prices") or {}
-                        bo = steam_extra.get("book_open") or {}
-                        c_open = statistics.median([bo[b] for b in bp if b in bo])
-                        c_now = statistics.median(list(bp.values()))
                         a_prev, a_curr = c_open, c_now
-                        a_last = a_open = (c_open - c_now) / c_open if c_open and c_now < c_open else 0.0
+                        a_last = a_open = c_move
                         a_sel = {**sel, "steam": sorted(steam_moves, key=lambda m: -m["move"])}
                     # Fire now, in the background: the Telegram send starts at
                     # the next await (the DB write just below), not after the

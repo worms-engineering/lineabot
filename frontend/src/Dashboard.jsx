@@ -18,7 +18,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", outright: "🏆" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", props_epl: "⚽", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -376,8 +376,10 @@ export default function Dashboard() {
       "Traccia i player props NBA su Polymarket (solo book liquidi, gratis)"],
     ["props_nba", !!status?.props_nba_enabled, "🏀 PROPS FD", "NBA player props (book)",
       "Player props NBA dei bookmaker via PropLine: alert solo se 2+ book muovono insieme. Serve la key PropLine."],
-    ["props_seriea", !!status?.props_seriea_enabled, "⚽ PROPS", "Serie A player props",
-      "Marcatore, tiri in porta e tiri della Serie A via PropLine (book USA): alert solo se 2+ book muovono insieme. Serve la key PropLine."],
+    ["props_seriea", !!status?.props_seriea_enabled, "⚽ PROPS SA", "Serie A player props",
+      "Marcatore, tiri in porta e tiri della Serie A via PropLine (book USA): alert solo se 2+ book e il consenso muovono oltre la soglia props. Serve la key PropLine."],
+    ["props_epl", !!status?.props_epl_enabled, "⚽ PROPS EPL", "Premier League player props",
+      "Marcatore, tiri in porta e tiri della Premier League via PropLine (book USA): stessa regola multi-book. Serve la key PropLine."],
   ];
   const togglePmSport = async (key, enabled, name) => {
     try {
@@ -976,6 +978,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const [open, setOpen] = useState(false);
   const [drop, setDrop] = useState(5);
   const [footballDrop, setFootballDrop] = useState(5);
+  const [propsDrop, setPropsDrop] = useState(8);
   const [token, setToken] = useState("");
   const [chatId, setChatId] = useState("");
   const [oddspapiKey, setOddspapiKey] = useState("");
@@ -988,6 +991,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
     if (settings && open) {
       setDrop(Math.round((settings.drop_threshold ?? 0.05) * 1000) / 10);
       setFootballDrop(Math.round((settings.football_drop_threshold ?? 0.05) * 1000) / 10);
+      setPropsDrop(Math.round((settings.props_drop_threshold ?? 0.08) * 1000) / 10);
       setWhaleUsd(Math.round(settings.whale_min_usd ?? 25000));
     }
   }, [settings, open]);
@@ -995,7 +999,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const save = async () => {
     setSaving(true);
     try {
-      const body = { drop_threshold: drop / 100, football_drop_threshold: footballDrop / 100 };
+      const body = { drop_threshold: drop / 100, football_drop_threshold: footballDrop / 100, props_drop_threshold: propsDrop / 100 };
       if (Number.isFinite(whaleUsd) && whaleUsd > 0) body.whale_min_usd = whaleUsd;
       if (token) body.telegram_token = token;
       if (chatId) body.telegram_chat_id = chatId;
@@ -1053,6 +1057,15 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
             </div>
             <Slider data-testid="settings-football-drop-slider" min={1} max={15} step={0.5} value={[footballDrop]} onValueChange={(v) => setFootballDrop(v[0])} />
             <div className="text-[10px] text-zinc-600 mt-2">Soglia separata per il calcio: alzala se arrivano troppi alert.</div>
+          </div>
+
+          <div>
+            <div className="flex justify-between text-xs uppercase tracking-widest text-zinc-400 mb-2">
+              <span>🎯 Drop threshold props</span>
+              <span className="font-mono text-white">{propsDrop.toFixed(1)}%</span>
+            </div>
+            <Slider data-testid="settings-props-drop-slider" min={2} max={20} step={0.5} value={[propsDrop]} onValueChange={(v) => setPropsDrop(v[0])} />
+            <div className="text-[10px] text-zinc-600 mt-2">Player props dei book (NBA, Serie A, Premier): l'alert parte solo se almeno 2 book E il consenso di tutti i book scendono di questa percentuale.</div>
           </div>
 
           <div className="space-y-2">

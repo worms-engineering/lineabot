@@ -144,13 +144,17 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
 - `PROPLINE_API_KEY` — key PropLine (prop-line.com, free 1.000 richieste/giorno) per i player props NBA
   dei bookmaker; impostabile anche dalla dashboard (Settings → PropLine key). `PROPLINE_SOURCE_BOOK`
   sceglie il book tracciato (default `fanduel`); gli altri book compaiono nell'alert per confronto
-  Con la stessa key: **player props Serie A** (marcatore, tiri in porta, tiri; book USA, poll ogni
+  Con la stessa key: **player props Serie A e Premier League** (marcatore, tiri in porta, tiri; book USA, poll ogni
   `PROPLINE_SOCCER_INTERVAL` secondi, default 120) con la stessa regola multi-book.
   La stessa key fornisce anche il **miglior prezzo ITA** negli alert di calcio e tennis (Snai, Eurobet,
   AdmiralBet), unito ai book .it di The Odds API
 - `PROPS_STEAM_MIN_BOOKS` / `PROPS_STEAM_BOOK_MOVE` — regola multi-book dei props PropLine: l'alert
   parte solo se almeno N book indipendenti (default 2) hanno accorciato la stessa linea di almeno
-  la soglia (default 0.04 = 4%); un nuovo alert solo se se ne aggiungono altri
+  la soglia **e** il consenso (mediana di tutti i book) è sceso della stessa soglia; un nuovo alert
+  solo se se ne aggiungono altri. La soglia si regola dalla dashboard (Settings → Drop threshold
+  props); `PROPS_STEAM_BOOK_MOVE` è solo il valore iniziale (default 0.08 = 8%)
+- `PROPLINE_SOCCER_RESERVE` — sotto queste richieste PropLine rimaste nel giorno (default 150) i props
+  di calcio (Serie A, Premier) si mettono in pausa fino al reset, per tenere NBA e miglior prezzo ITA
 - `NBA_PROPS_MIN_LIQUIDITY` / `NBA_PROPS_MAX_SPREAD` — filtro dei player props NBA su Polymarket:
   liquidità minima del book (default 2000 $) e spread bid/ask massimo (default 0.08)
 - `FIXTURES_CACHE_TTL` — secondi di cache del calendario OddsPapi (default 1800); le quote
