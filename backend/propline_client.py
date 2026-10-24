@@ -255,6 +255,11 @@ def parse_props_events(events: list, start_epoch: int, end_epoch: int,
             others = [{"book": _book_label(bk), "price": props[(mkey, player, point, side)]}
                       for bk, props in books.items()
                       if bk != source_book and (mkey, player, point, side) in props]
+            # Every book's price for this exact prop (source included), keyed
+            # by book: the monitor's multi-book steam rule tracks each one.
+            book_prices = {bk: props[(mkey, player, point, side)]
+                           for bk, props in books.items()
+                           if (mkey, player, point, side) in props}
             label_side = "Over" if side == "over" else "Under"
             selections.append({
                 "market_key": f"prop:{mkey}:{player}",
@@ -264,6 +269,7 @@ def parse_props_events(events: list, start_epoch: int, end_epoch: int,
                 "label": f"{label_side} {point:g}",
                 "price": price,
                 "others": others,
+                "book_prices": book_prices,
             })
         if selections:
             out.append({

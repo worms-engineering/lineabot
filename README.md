@@ -146,6 +146,9 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
   sceglie il book tracciato (default `fanduel`); gli altri book compaiono nell'alert per confronto
   La stessa key fornisce anche il **miglior prezzo ITA** negli alert di calcio e tennis (Snai, Eurobet,
   AdmiralBet), unito ai book .it di The Odds API
+- `PROPS_STEAM_MIN_BOOKS` / `PROPS_STEAM_BOOK_MOVE` — regola multi-book dei props PropLine: l'alert
+  parte solo se almeno N book indipendenti (default 2) hanno accorciato la stessa linea di almeno
+  la soglia (default 0.04 = 4%); un nuovo alert solo se se ne aggiungono altri
 - `NBA_PROPS_MIN_LIQUIDITY` / `NBA_PROPS_MAX_SPREAD` — filtro dei player props NBA su Polymarket:
   liquidità minima del book (default 2000 $) e spread bid/ask massimo (default 0.08)
 - `FIXTURES_CACHE_TTL` — secondi di cache del calendario OddsPapi (default 1800); le quote

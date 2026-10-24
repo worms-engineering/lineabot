@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import statistics
 import logging
 import os
 import uuid
@@ -24,6 +25,7 @@ from pymongo import UpdateOne
 from theoddsapi_client import TheOddsApiClient
 from oddspapi_client import OddsPapiClient
 from propline_client import PropLineClient
+from propline_client import _book_label as pl_book_label
 from telegram_client import TelegramClient
 from key_rotation import generate_oddspapi_key, KeyRotationError
 import prediction_markets as pmk
@@ -53,6 +55,14 @@ WHALE_MAX_AGE_SECONDS = 15 * 60
 # Follow-up fills by the same wallet/market/side within this window update the
 # original whale alert instead of sending a new one.
 WHALE_AGG_SECONDS = 15 * 60
+# Multi-book steam rule for sportsbook props (PropLine): no single book is
+# measurably sharper than the market on props (PropLine accuracy report, NBA:
+# every book "in line" with the consensus), so a lone book's move is not a
+# signal. A prop line alerts only when at least PROPS_STEAM_MIN_BOOKS
+# independent books have each shortened it by >= PROPS_STEAM_BOOK_MOVE since
+# they started being tracked. It re-alerts only if MORE books join the move.
+PROPS_STEAM_MIN_BOOKS = int(os.environ.get("PROPS_STEAM_MIN_BOOKS", "2"))
+PROPS_STEAM_BOOK_MOVE = float(os.environ.get("PROPS_STEAM_BOOK_MOVE", "0.04"))
 # Drop alerts are sent before the cross-checks; the cross-checks then have this
 # long to come back and be edited into the message.
 ALERT_CONTEXT_TIMEOUT = 20
@@ -879,6 +889,40 @@ class TennisMonitor:
                         and drop_last >= threshold and drop_from_open >= threshold):
                     is_drop = True
 
+                # Sportsbook props (PropLine): replace the single-price rule with
+                # the multi-book steam rule. Each book's price for this line is
+                # tracked with its own open (anchored on its first two ticks,
+                # like open_price) and only counts once it has 3 observations.
+                steam_moves: list[dict] = []
+                steam_extra: dict[str, Any] = {}
+                if provider == "propline":
+                    is_drop = False
+                    # The in-play oscillation detector is for feeds with no
+                    # live flag (same-day tennis). PropLine flags live games
+                    # and they are skipped upstream, so a pregame line that
+                    # moves and then reverts must stay alertable.
+                    rises, suspect_live = 0, False
+                    book_prices = sel.get("book_prices") or {}
+                    b_open = dict((prev or {}).get("book_open") or {})
+                    b_obs = dict((prev or {}).get("book_obs") or {})
+                    for bk, p in book_prices.items():
+                        n = int(b_obs.get(bk, 0)) + 1
+                        if bk not in b_open or n <= 2:
+                            b_open[bk] = p
+                        b_obs[bk] = n
+                    for bk, p in book_prices.items():
+                        o = b_open.get(bk)
+                        if b_obs[bk] >= 3 and o and p < o and (o - p) / o >= PROPS_STEAM_BOOK_MOVE:
+                            steam_moves.append({"book": pl_book_label(bk), "from": o, "to": p,
+                                                "move": (o - p) / o})
+                    alerted = int((prev or {}).get("steam_alerted", 0))
+                    if (prev and observations >= 3 and fresh and not suspect_live
+                            and len(steam_moves) >= PROPS_STEAM_MIN_BOOKS
+                            and len(steam_moves) > alerted):
+                        is_drop = True
+                    steam_extra = {"book_open": b_open, "book_obs": b_obs,
+                                   "steam_alerted": alerted}
+
                 # Final freshness gate against a LIVE clock. The pre-pass filters
                 # on the scan-start clock, but a rate-limited scan takes 10-30s
                 # and providers lag/shift start times - so a match can cross its
@@ -889,6 +933,14 @@ class TennisMonitor:
                 if is_drop and start_epoch is not None and \
                         start_epoch - int(_now().timestamp()) < MIN_LEAD_SECONDS:
                     is_drop = False
+
+                if steam_extra:
+                    # Remember how many books the last alert covered: fire again
+                    # only when more join; if the move fades, lower the mark so a
+                    # fresh move can alert again.
+                    steam_extra["steam_alerted"] = (
+                        len(steam_moves) if is_drop
+                        else min(steam_extra["steam_alerted"], len(steam_moves)))
 
                 line_ops.append(UpdateOne(
                     {"_id": key},
@@ -901,6 +953,7 @@ class TennisMonitor:
                         "first_seen_at": first_seen,
                         "updated_at": now_dt.isoformat(),
                         "match_id": match_id,
+                        **steam_extra,
                     }},
                     upsert=True,
                 ))
@@ -919,12 +972,24 @@ class TennisMonitor:
                         and s.get("outcome") != sel.get("outcome")
                         and s.get("price")
                     ]
+                    a_sel, a_prev, a_curr, a_last, a_open = (
+                        sel, prev_price, curr, drop_last, drop_from_open)
+                    if steam_moves:
+                        # The alert reports the consensus (median across the
+                        # books) move and lists every book that moved.
+                        bp = sel.get("book_prices") or {}
+                        bo = steam_extra.get("book_open") or {}
+                        c_open = statistics.median([bo[b] for b in bp if b in bo])
+                        c_now = statistics.median(list(bp.values()))
+                        a_prev, a_curr = c_open, c_now
+                        a_last = a_open = (c_open - c_now) / c_open if c_open and c_now < c_open else 0.0
+                        a_sel = {**sel, "steam": sorted(steam_moves, key=lambda m: -m["move"])}
                     # Fire now, in the background: the Telegram send starts at
                     # the next await (the DB write just below), not after the
                     # rest of the scan.
                     alert_tasks.append(asyncio.create_task(self._fire_drop_alert(
-                        match, sel, sport, provider, prev_price, curr, drop_last,
-                        drop_from_open, siblings, now_dt, dry_run_notify)))
+                        match, a_sel, sport, provider, a_prev, a_curr, a_last,
+                        a_open, siblings, now_dt, dry_run_notify)))
 
                 line_rows.append({
                     "market_name": sel["market_name"],
@@ -1230,12 +1295,12 @@ class TennisMonitor:
             move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
                          f"(<b>-{drop_last * 100:.1f}%</b>) · quote Polymarket")
         elif match.get("provider") == "propline":
-            # Sportsbook props via PropLine: the source is the tracked book
-            # (FanDuel by default), never Pinnacle.
-            book = esc(str(match.get("source_book") or "book"))
-            header = f"⬇️ DROP {book} — " + esc(sport_tag)
-            move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
-                         f"(<b>-{drop_last * 100:.1f}%</b>) · quote {book}")
+            # Sportsbook props via PropLine, multi-book steam: the move shown is
+            # the consensus (median across the books quoting the line).
+            steam = sel.get("steam") or []
+            header = f"📈 STEAM PROPS ({len(steam)} book) — " + esc(sport_tag)
+            move_line = (f"Consenso {prev_price:.2f} → <b>{curr:.2f}</b> "
+                         f"(<b>-{drop_last * 100:.1f}%</b>)")
         else:
             header = "⬇️ PINNACLE DROP — " + esc(sport_tag)
             move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
@@ -1258,6 +1323,11 @@ class TennisMonitor:
                 tag = code.get(s.get("outcome")) or str(s.get("label") or "")
                 parts.append(f"{esc(tag)} <b>{s['price']:.2f}</b>")
             lines.append("📊 Altre quote: " + " · ".join(parts))
+        steam = sel.get("steam") or []
+        if steam:
+            lines.append("🔥 Book in movimento: " + " · ".join(
+                f"{esc(m['book'])} {m['from']:.2f}→<b>{m['to']:.2f}</b> (-{m['move'] * 100:.1f}%)"
+                for m in steam))
         # Same prop at the other books (PropLine selections carry them).
         others = sel.get("others") or []
         if others:
