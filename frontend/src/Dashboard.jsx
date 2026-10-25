@@ -984,6 +984,20 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const [oddspapiKey, setOddspapiKey] = useState("");
   const [theoddsapiKey, setTheoddsapiKey] = useState("");
   const [proplineKey, setProplineKey] = useState("");
+  const [checkingPl, setCheckingPl] = useState(false);
+  const checkPropline = async () => {
+    setCheckingPl(true);
+    try {
+      const r = await axios.post(`${API}/propline/check`);
+      if (r.data.ok) toast.success(`PropLine: key valida · ${r.data.remaining ?? "?"} richieste rimaste oggi`);
+      else toast.error(`PropLine: ${r.data.error}`, { duration: 10000 });
+      await onSaved();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setCheckingPl(false);
+    }
+  };
   const [whaleUsd, setWhaleUsd] = useState(25000);
   const [saving, setSaving] = useState(false);
 
@@ -1006,8 +1020,12 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
       if (oddspapiKey.trim()) body.oddspapi_api_key = oddspapiKey.trim();
       if (theoddsapiKey.trim()) body.theoddsapi_api_key = theoddsapiKey.trim();
       if (proplineKey.trim()) body.propline_api_key = proplineKey.trim();
-      await axios.put(`${API}/settings`, body);
+      const res = await axios.put(`${API}/settings`, body);
       toast.success("Impostazioni salvate");
+      const pl = res?.data?.propline_status;
+      if (body.propline_api_key && pl) {
+        (pl.startsWith("✓") ? toast.success : toast.error)(`PropLine: ${pl}`, { duration: 10000 });
+      }
       setToken(""); setChatId(""); setOddspapiKey(""); setTheoddsapiKey(""); setProplineKey("");
       await onSaved();
       setOpen(false);
@@ -1142,7 +1160,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
 
           <div className="space-y-2">
             <div className="text-xs uppercase tracking-widest text-zinc-400">PropLine key</div>
-            <div className="text-[10px] text-zinc-600">Player props NBA dei bookmaker (FanDuel + confronto). Key gratuita su prop-line.com (1.000 richieste/giorno). Lascia vuoto per non cambiare.</div>
+            <div className="text-[10px] text-zinc-600">Player props NBA dei bookmaker (FanDuel + confronto). Key gratuita su prop-line.com (1.000 richieste/giorno). Incolla la key (va bene anche l'intero comando "curl" della mail). Lascia vuoto per non cambiare.</div>
             <Input
               data-testid="settings-propline-key"
               value={proplineKey}
@@ -1151,7 +1169,22 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
               className="rounded-none bg-[#0A0A0A] border-white/20 font-mono"
             />
             {settings?.propline_key_hint && (
-              <div className="text-[10px] text-[#32D74B] uppercase tracking-widest">✓ Key attiva: {settings.propline_key_hint}</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className={`text-[10px] uppercase tracking-widest ${
+                  (settings.propline_status || "").startsWith("✗") ? "text-[#FF3B30]" : "text-[#32D74B]"
+                }`}>
+                  Key {settings.propline_key_hint}{settings.propline_status ? ` — ${settings.propline_status}` : ""}
+                </div>
+                <button
+                  type="button"
+                  data-testid="settings-propline-check"
+                  disabled={checkingPl}
+                  onClick={checkPropline}
+                  className="shrink-0 px-2 py-1 border border-white/20 text-[10px] uppercase tracking-widest text-zinc-300 hover:bg-white/10"
+                >
+                  {checkingPl ? "..." : "Verifica"}
+                </button>
+              </div>
             )}
           </div>
 

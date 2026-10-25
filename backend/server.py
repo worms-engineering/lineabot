@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,6 +173,9 @@ class SettingsOut(BaseModel):
     oddspapi_key_hint: str | None
     theoddsapi_key_hint: str | None
     propline_key_hint: str | None
+    # Result of the last PropLine request ("✓ key valida · N richieste rimaste
+    # oggi" / "✗ key rifiutata ..."), so a bad key is visible in Settings.
+    propline_status: str | None = None
 
 
 class StatusOut(BaseModel):
@@ -346,6 +350,7 @@ def _settings_out() -> SettingsOut:
         oddspapi_key_hint=f"…{op_key[-4:]}" if op_key else None,
         theoddsapi_key_hint=f"…{toa_key[-4:]}" if toa_key else None,
         propline_key_hint=f"…{pl_key[-4:]}" if pl_key else None,
+        propline_status=_propline_status(),
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
         props_drop_threshold=monitor.props_drop_threshold,
@@ -377,6 +382,24 @@ def _settings_out() -> SettingsOut:
 @api.get("/settings", response_model=SettingsOut)
 async def get_settings():
     return _settings_out()
+
+
+def _propline_status() -> str | None:
+    fn = getattr(monitor.clients.get("propline"), "status_text", None)
+    return fn() if callable(fn) else None
+
+
+def _clean_key(raw: str | None) -> str | None:
+    """Normalize a pasted API key. Accepts the bare key or the whole sample
+    command PropLine e-mails ('curl "https://...&apiKey=KEY"'): the key is
+    extracted from it. Blank -> None (unchanged)."""
+    if raw is None:
+        return None
+    raw = raw.strip().strip('"').strip("'").strip()
+    m = re.search(r"apiKey=([A-Za-z0-9_-]+)", raw)
+    if m:
+        return m.group(1)
+    return raw or None
 
 
 @api.put("/settings", response_model=SettingsOut)
@@ -412,10 +435,18 @@ async def update_settings(body: SettingsIn):
         if body.oddspapi_api_key is not None else None,
         theoddsapi_api_key=(body.theoddsapi_api_key.strip() or None)
         if body.theoddsapi_api_key is not None else None,
-        propline_api_key=(body.propline_api_key.strip() or None)
-        if body.propline_api_key is not None else None,
+        propline_api_key=_clean_key(body.propline_api_key),
     )
+    pl = monitor.clients.get("propline")
+    if body.propline_api_key and getattr(pl, "api_key", None) and hasattr(pl, "check_key"):
+        await pl.check_key()
     return _settings_out()
+
+
+@api.post("/propline/check")
+async def propline_check():
+    """Test the current PropLine key with one request (dashboard button)."""
+    return await monitor.clients["propline"].check_key()
 
 
 @api.post("/telegram/test")

@@ -383,6 +383,10 @@ class PropLineClient:
         # sport_key -> (monotonic fetch time, [commence epochs])
         self._schedule: dict[str, tuple[float, list[int]]] = {}
         self._warned_no_key = False
+        # Last request outcome, surfaced in the dashboard (the props loop runs in
+        # the background, so a rejected key would otherwise go unnoticed).
+        self.last_error: str | None = None
+        self.last_ok_at: float | None = None
         self._sports_list: tuple[float, list[dict]] | None = None
         # sport -> monotonic time of its last odds request (per-sport cadence)
         self._last_fetch: dict[str, float] = {}
@@ -395,8 +399,12 @@ class PropLineClient:
     async def _get(self, path: str, params: dict | None = None) -> Any:
         if not self.api_key:
             raise RuntimeError("PropLine key not configured (PROPLINE_API_KEY)")
-        resp = await self._client.get(f"{BASE_URL}{path}", params=params or {},
-                                      headers={"X-API-Key": self.api_key})
+        try:
+            resp = await self._client.get(f"{BASE_URL}{path}", params=params or {},
+                                          headers={"X-API-Key": self.api_key})
+        except Exception as e:
+            self.last_error = f"PropLine non raggiungibile ({type(e).__name__})"
+            raise
         rem = resp.headers.get("X-Daily-Remaining")
         if rem is not None:
             try:
@@ -411,13 +419,43 @@ class PropLineClient:
                 pass
             if "burst" not in str(body.get("error") or ""):
                 self.quota_exhausted = True  # daily cap: resets 00:00 UTC
+                self.last_error = "quota giornaliera esaurita (reset alle 00:00 UTC)"
             raise RuntimeError(f"PropLine 429 on {path}: {body.get('error') or resp.text[:120]}")
-        if resp.status_code == 401:
-            raise RuntimeError("PropLine rejected the API key (401)")
+        if resp.status_code in (401, 403):
+            self.last_error = f"key rifiutata da PropLine ({resp.status_code})"
+            raise RuntimeError(f"PropLine rejected the API key ({resp.status_code})")
+        if resp.status_code >= 400:
+            self.last_error = f"errore PropLine HTTP {resp.status_code}"
         resp.raise_for_status()
         self.quota_exhausted = (self.requests_remaining is not None
                                 and self.requests_remaining <= 0)
+        self.last_error = None
+        self.last_ok_at = time.time()
         return resp.json()
+
+    async def check_key(self) -> dict:
+        """One cheap authenticated request (/v1/sports, 1 of the daily quota)
+        to tell the dashboard whether the current key works right now."""
+        if not self.api_key:
+            return {"ok": False, "error": "nessuna key impostata", "remaining": None}
+        try:
+            await self._get("/sports")
+            return {"ok": True, "error": None, "remaining": self.requests_remaining}
+        except Exception as e:
+            return {"ok": False, "error": self.last_error or str(e)[:120],
+                    "remaining": self.requests_remaining}
+
+    def status_text(self) -> str | None:
+        """Human status for the Settings dialog, from the last request."""
+        if not self.api_key:
+            return None
+        if self.last_error:
+            return f"✗ {self.last_error}"
+        if self.last_ok_at is not None:
+            left = (f" · {self.requests_remaining} richieste rimaste oggi"
+                    if self.requests_remaining is not None else "")
+            return f"✓ key valida{left}"
+        return "non ancora verificata"
 
     async def _game_times(self, sport_key: str) -> list[int]:
         """Commence times of the sport's upcoming games, cached SCHEDULE_TTL so
