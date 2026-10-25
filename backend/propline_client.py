@@ -355,6 +355,7 @@ def parse_props_events(events: list, start_epoch: int, end_epoch: int,
                 "price": round(price, 3),
                 "others": others,
                 "book_prices": book_prices,
+                "player": display,
             })
         if selections:
             out.append({

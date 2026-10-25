@@ -150,8 +150,10 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
   AdmiralBet), unito ai book .it di The Odds API
 - `PROPS_STEAM_MIN_BOOKS` / `PROPS_STEAM_BOOK_MOVE` — regola multi-book dei props PropLine: l'alert
   parte solo se almeno N book indipendenti (default 2) hanno accorciato la stessa linea di almeno
-  la soglia **e** il consenso (mediana di tutti i book) è sceso della stessa soglia; un nuovo alert
-  solo se se ne aggiungono altri. La soglia si regola dalla dashboard (Settings → Drop threshold
+  la soglia **e** il consenso (mediana di tutti i book) è sceso della stessa soglia. Anti-spam: una
+  linea già segnalata riparte solo su un nuovo minimo di almeno un'altra soglia; più linee dello
+  stesso giocatore nello stesso scan arrivano in un solo messaggio; dopo un alert, le altre linee del
+  giocatore restano in pausa `PROPS_PLAYER_COOLDOWN` secondi (default 1800). La soglia si regola dalla dashboard (Settings → Drop threshold
   props); `PROPS_STEAM_BOOK_MOVE` è solo il valore iniziale (default 0.08 = 8%)
 - `PROPLINE_SOCCER_RESERVE` — sotto queste richieste PropLine rimaste nel giorno (default 150) i props
   di calcio (Serie A, Premier) si mettono in pausa fino al reset, per tenere NBA e miglior prezzo ITA

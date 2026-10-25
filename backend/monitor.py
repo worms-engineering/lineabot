@@ -71,6 +71,14 @@ PROPS_STEAM_MIN_BOOKS = int(os.environ.get("PROPS_STEAM_MIN_BOOKS", "2"))
 # Under move isn't actionable. Unders are still tracked - they show up as the
 # sibling price ("Altre quote") in the Over's alert.
 PROP_SPORT_KEYS = {"nba_props", "props_nba", "props_seriea", "props_epl"}
+# Anti-spam for sportsbook props (measured on the live alerts: 33 -> 12):
+# - a line that already alerted re-alerts only when the consensus makes a NEW
+#   low at least one props threshold below the price of its last alert (books
+#   drifting in and out of the move used to re-fire the same line);
+# - lines of the same player moving in the same scan go out as ONE message;
+# - after an alert on a player, his OTHER lines stay quiet for this long (a
+#   line making a new low still gets through).
+PROPS_PLAYER_COOLDOWN = int(os.environ.get("PROPS_PLAYER_COOLDOWN", str(30 * 60)))
 PROPS_STEAM_BOOK_MOVE = float(os.environ.get("PROPS_STEAM_BOOK_MOVE", "0.08"))
 # Drop alerts are sent before the cross-checks; the cross-checks then have this
 # long to come back and be edited into the message.
@@ -313,6 +321,8 @@ class TennisMonitor:
         self.fast_loop_sports: tuple[str, ...] = ()
         # Bound concurrent Telegram sends when several drops fire at once.
         self._send_sem = asyncio.Semaphore(4)
+        # (sport, match_id, player key) -> epoch of the player's last props alert
+        self._prop_player_alerted: dict[tuple, int] = {}
         self.last_scan_at: datetime | None = None
         self.last_scan_error: str | None = None
         self.last_scan_stats: dict[str, Any] = {}
@@ -863,6 +873,7 @@ class TennisMonitor:
                 prev_states[doc["_id"]] = doc
         line_ops: list[UpdateOne] = []
         matches_payload: list[dict] = []
+        prop_groups: dict[tuple, list[tuple]] = {}
 
         for item in plan_items:
             match = item["match"]
@@ -968,14 +979,22 @@ class TennisMonitor:
                     c_open = statistics.median([b_open[bk] for bk in settled]) if settled else 0.0
                     c_now = statistics.median([book_prices[bk] for bk in settled]) if settled else 0.0
                     c_move = (c_open - c_now) / c_open if c_open and c_now < c_open else 0.0
-                    alerted = int((prev or {}).get("steam_alerted", 0))
+                    last_alert = (prev or {}).get("steam_alert_price")
+                    player_key = str(sel.get("market_key") or "").split(":", 2)[-1]
+                    cd_key = (sport, match_id, player_key)
+                    cd_at = self._prop_player_alerted.get(cd_key)
                     if (prev and observations >= 3 and fresh and not suspect_live
                             and len(steam_moves) >= PROPS_STEAM_MIN_BOOKS
                             and c_move >= pth
-                            and len(steam_moves) > alerted):
+                            # A: an already-alerted line needs a new low
+                            and (not last_alert or c_now <= last_alert * (1 - pth))
+                            # C: other lines of a player alerted recently wait
+                            and (last_alert or cd_at is None
+                                 or now_ts - cd_at >= PROPS_PLAYER_COOLDOWN)):
                         is_drop = True
-                    steam_extra = {"book_open": b_open, "book_obs": b_obs,
-                                   "steam_alerted": alerted}
+                    steam_extra = {"book_open": b_open, "book_obs": b_obs}
+                    if last_alert:
+                        steam_extra["steam_alert_price"] = last_alert
 
                 # Final freshness gate against a LIVE clock. The pre-pass filters
                 # on the scan-start clock, but a rate-limited scan takes 10-30s
@@ -991,13 +1010,9 @@ class TennisMonitor:
                 if is_drop and sport in PROP_SPORT_KEYS and sel.get("outcome") == "under":
                     is_drop = False  # props: Over only (Unders not priced by ITA books)
 
-                if steam_extra:
-                    # Remember how many books the last alert covered: fire again
-                    # only when more join; if the move fades, lower the mark so a
-                    # fresh move can alert again.
-                    steam_extra["steam_alerted"] = (
-                        len(steam_moves) if is_drop
-                        else min(steam_extra["steam_alerted"], len(steam_moves)))
+                if steam_extra and is_drop:
+                    # Consensus at this alert: the line re-alerts only below it.
+                    steam_extra["steam_alert_price"] = c_now
 
                 line_ops.append(UpdateOne(
                     {"_id": key},
@@ -1037,12 +1052,17 @@ class TennisMonitor:
                         a_prev, a_curr = c_open, c_now
                         a_last = a_open = c_move
                         a_sel = {**sel, "steam": sorted(steam_moves, key=lambda m: -m["move"])}
-                    # Fire now, in the background: the Telegram send starts at
-                    # the next await (the DB write just below), not after the
-                    # rest of the scan.
-                    alert_tasks.append(asyncio.create_task(self._fire_drop_alert(
-                        match, a_sel, sport, provider, a_prev, a_curr, a_last,
-                        a_open, siblings, now_dt, dry_run_notify)))
+                    args = (match, a_sel, sport, provider, a_prev, a_curr, a_last,
+                            a_open, siblings, now_dt, dry_run_notify)
+                    if steam_moves:
+                        # B: collected per player, sent after this sport's
+                        # lines are evaluated (same scan, no added delay).
+                        prop_groups.setdefault(cd_key, []).append(args)
+                    else:
+                        # Fire now, in the background: the Telegram send starts
+                        # at the next await (the DB write just below), not after
+                        # the rest of the scan.
+                        alert_tasks.append(asyncio.create_task(self._fire_drop_alert(*args)))
 
                 line_rows.append({
                     "market_name": sel["market_name"],
@@ -1070,6 +1090,17 @@ class TennisMonitor:
                     "lines": line_rows,
                 })
 
+        # B: one message per player for the props lines that alerted together.
+        for cd_key, group in prop_groups.items():
+            self._prop_player_alerted[cd_key] = now_ts
+            if len(group) == 1:
+                alert_tasks.append(asyncio.create_task(self._fire_drop_alert(*group[0])))
+            else:
+                alert_tasks.append(asyncio.create_task(self._fire_prop_group_alert(group)))
+        if len(self._prop_player_alerted) > 5000:  # bounded: drop expired entries
+            self._prop_player_alerted = {k: t for k, t in self._prop_player_alerted.items()
+                                         if now_ts - t < PROPS_PLAYER_COOLDOWN}
+
         # One round-trip for all the line-state upserts of this sport.
         if line_ops:
             await self.db.line_state.bulk_write(line_ops, ordered=False)
@@ -1082,6 +1113,73 @@ class TennisMonitor:
         )
         totals["fixtures"] += len(matches_payload)
         totals["selections"] += sum(len(m["lines"]) for m in matches_payload)
+
+    async def _fire_prop_group_alert(self, group: list[tuple]) -> bool:
+        """One Telegram message for several props lines of the SAME player that
+        steamed in the same scan (e.g. shots Over 1.5 and Over 2.5). Each item is
+        the _fire_drop_alert argument tuple."""
+        try:
+            match, _, sport, provider = group[0][:4]
+            now_dt, dry_run_notify = group[0][9], group[0][10]
+            esc = html.escape
+            meta = SPORT_META.get(sport, {})
+            sport_tag = f"{meta.get('emoji', '')} {meta.get('label', sport)}".strip()
+            start_ts = match.get("start_epoch")
+            start_str = (datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%H:%M UTC")
+                         if start_ts else "")
+            items = sorted(group, key=lambda a: -a[6])  # strongest consensus move first
+            player = items[0][1].get("player") or items[0][1].get("market_name")
+            max_books = max(len(a[1].get("steam") or []) for a in items)
+            lines = [f"<b>📈 STEAM PROPS ({len(items)} linee, fino a {max_books} book) — {esc(sport_tag)}</b>",
+                     f"{esc(str(match.get('player1')))} vs {esc(str(match.get('player2')))}",
+                     f"{esc(match.get('tournament') or '')}" + (f" · start {start_str}" if start_str else ""),
+                     f"👤 <b>{esc(str(player))}</b>"]
+            for (_, sel, _, _, c_open, c_now, c_move, _, sib, _, _) in items:
+                moved = sel.get("steam") or []
+                under = next((x for x in sib if x.get("outcome") == "under"), None)
+                lines.append(
+                    f"• {esc(sel['market_name'])} — <b>{esc(sel['label'])}</b>: "
+                    f"{c_open:.2f} → <b>{c_now:.2f}</b> (<b>-{c_move * 100:.1f}%</b>), "
+                    f"{len(moved)} book"
+                    + (f" · Under {under['price']:.2f}" if under and under.get("price") else ""))
+                lines.append("    🔥 " + " · ".join(
+                    f"{esc(m['book'])} {m['from']:.2f}→{m['to']:.2f}" for m in moved))
+            text = "\n".join(lines)
+            tg: dict = {"ok": False}
+            if not dry_run_notify:
+                try:
+                    async with self._send_sem:
+                        tg = await self.telegram.send_message(text)
+                except Exception as e:
+                    tg = {"ok": False, "error": str(e)}
+            top = items[0]
+            await self.db.alerts.insert_one({
+                "_id": str(uuid.uuid4()),
+                "type": "drop",
+                "provider": provider,
+                "sport": sport,
+                "created_at": now_dt.isoformat(),
+                "player1": match.get("player1"),
+                "player2": match.get("player2"),
+                "tournament": match.get("tournament"),
+                "start_epoch": start_ts,
+                "market_name": top[1]["market_name"],
+                "label": " · ".join(a[1]["label"] for a in items),
+                "prev_price": round(top[4], 3) if top[4] else None,
+                "price": round(top[5], 3),
+                "drop_last": round(top[6], 4),
+                "drop_from_open": round(top[7], 4),
+                "lines": [{"market_name": a[1]["market_name"], "label": a[1]["label"],
+                           "prev_price": round(a[4], 3), "price": round(a[5], 3),
+                           "drop": round(a[6], 4)} for a in items],
+                "telegram_ok": bool(tg.get("ok")),
+                "telegram_response": tg,
+                "message": text,
+            })
+            return True
+        except Exception:
+            logger.exception("props group alert failed")
+            return False
 
     async def _fire_drop_alert(self, match: dict, sel: dict, sport: str, provider: str,
                                prev_price: float, curr: float, drop_last: float,
