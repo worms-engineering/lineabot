@@ -66,6 +66,11 @@ WHALE_AGG_SECONDS = 15 * 60
 # books join. The threshold is the dashboard "props" slider
 # (props_drop_threshold); PROPS_STEAM_BOOK_MOVE only seeds its default.
 PROPS_STEAM_MIN_BOOKS = int(os.environ.get("PROPS_STEAM_MIN_BOOKS", "2"))
+# Player-prop sports (sportsbook via PropLine and Polymarket). On these only the
+# OVER side can alert: Italian books don't price player-prop Unders, so an
+# Under move isn't actionable. Unders are still tracked - they show up as the
+# sibling price ("Altre quote") in the Over's alert.
+PROP_SPORT_KEYS = {"nba_props", "props_nba", "props_seriea", "props_epl"}
 PROPS_STEAM_BOOK_MOVE = float(os.environ.get("PROPS_STEAM_BOOK_MOVE", "0.08"))
 # Drop alerts are sent before the cross-checks; the cross-checks then have this
 # long to come back and be edited into the message.
@@ -982,6 +987,9 @@ class TennisMonitor:
                 if is_drop and start_epoch is not None and \
                         start_epoch - int(_now().timestamp()) < MIN_LEAD_SECONDS:
                     is_drop = False
+
+                if is_drop and sport in PROP_SPORT_KEYS and sel.get("outcome") == "under":
+                    is_drop = False  # props: Over only (Unders not priced by ITA books)
 
                 if steam_extra:
                     # Remember how many books the last alert covered: fire again

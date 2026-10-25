@@ -144,7 +144,7 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
 - `PROPLINE_API_KEY` — key PropLine (prop-line.com, free 1.000 richieste/giorno) per i player props NBA
   dei bookmaker; impostabile anche dalla dashboard (Settings → PropLine key). `PROPLINE_SOURCE_BOOK`
   sceglie il book tracciato (default `fanduel`); gli altri book compaiono nell'alert per confronto
-  Con la stessa key: **player props Serie A e Premier League** (marcatore, tiri in porta, tiri; book USA, poll ogni
+  Con la stessa key: **player props Serie A e Premier League** (tiri in porta, tiri; book USA; solo Over, niente mercati marcatore; poll ogni
   `PROPLINE_SOCCER_INTERVAL` secondi, default 120) con la stessa regola multi-book.
   La stessa key fornisce anche il **miglior prezzo ITA** negli alert di calcio e tennis (Snai, Eurobet,
   AdmiralBet), unito ai book .it di The Odds API

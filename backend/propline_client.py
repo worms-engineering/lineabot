@@ -61,8 +61,9 @@ SCHEDULE_TTL = 60 * 60
 # (verified live), so it's the US books. BetRivers stands for the Kambi group:
 # Unibet / BetRivers / Hard Rock post identical prices (one feed), and asking
 # for all three would count one opinion three times in the steam rule.
+# Goalscorer markets (anytime / first / 2+) are deliberately left out: the user
+# doesn't want alerts on them, so they aren't even requested.
 SOCCER_PROP_MARKETS = {
-    "anytime_goal_scorer": "Marcatore",
     "player_shots_on_target": "Tiri in porta",
     "player_shots": "Tiri",
 }
