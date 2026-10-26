@@ -645,8 +645,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          </div>
-
           {status?.last_scan_error && (
             <div className="border border-[#FF3B30]/40 bg-[#FF3B30]/5 p-3 text-xs">
               <div className="flex items-center gap-2 text-[#FF3B30] font-semibold uppercase tracking-widest">
