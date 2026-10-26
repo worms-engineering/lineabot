@@ -19,6 +19,12 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
+// Alert-log source pill per backend provider.
+const SOURCE_PILL = {
+  prediction: { label: "Polymarket", color: "#FF2D55", title: "Fonte quote: Polymarket (prediction market)" },
+  propline: { label: "Book · props", color: "#BF5AF2", title: "Fonte quote: bookmaker USA via PropLine (regola multi-book)" },
+  default: { label: "Pinnacle", color: "#007AFF", title: "Fonte quote: Pinnacle (sharp book)" },
+};
 const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", props_epl: "⚽", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
@@ -813,16 +819,19 @@ export default function Dashboard() {
                 <span className="text-zinc-300 min-w-0 break-words">
                   {underway && <span title="Match già iniziato" className="mr-1 text-zinc-500">▶</span>}
                   {SPORT_EMOJI[a.sport] ? `${SPORT_EMOJI[a.sport]} ` : ""}
-                  <span
-                    className={`mr-1 px-1 py-0.5 text-[8px] uppercase tracking-widest border align-middle ${
-                      a.provider === "prediction"
-                        ? "text-[#BF5AF2] border-[#BF5AF2]/40"
-                        : "text-[#007AFF] border-[#007AFF]/40"
-                    }`}
-                    title={a.provider === "prediction" ? "Fonte quote: Polymarket (prediction market)" : "Fonte quote: Pinnacle (sharp book)"}
-                  >
-                    {a.provider === "prediction" ? "Polymarket" : "Pinnacle"}
-                  </span>
+                  {(() => {
+                    // Source pill, same colours as the sidebar groups.
+                    const src = SOURCE_PILL[a.provider] || SOURCE_PILL.default;
+                    return (
+                      <span
+                        className="mr-1 px-1 py-0.5 text-[8px] uppercase tracking-widest border align-middle"
+                        style={{ color: src.color, borderColor: `${src.color}66` }}
+                        title={src.title}
+                      >
+                        {src.label}
+                      </span>
+                    );
+                  })()}
                   <span className="text-white">{a.player2 ? `${a.player1} vs ${a.player2}` : (a.player1 || a.tournament)}</span>
                   <span className="text-zinc-600"> · {a.market_name} — </span>
                   <span className="text-white">{a.label}</span>
