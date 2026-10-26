@@ -4,6 +4,7 @@ import { Toaster, toast } from "sonner";
 import {
   RefreshCw, Settings, Send, Clock, Radio, TrendingDown,
   AlertCircle, CheckCircle2, XCircle, Activity, Filter, Power, Volume2, VolumeX,
+  ChevronDown, Layers,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
@@ -54,6 +55,9 @@ export default function Dashboard() {
   const [hideStarted, setHideStarted] = useState(false);
   const [now, setNow] = useState(Date.now());
   const scanningRef = useRef(false);
+  const [isDesktop] = useState(() => {
+    try { return window.matchMedia("(min-width: 1024px)").matches; } catch { return true; }
+  });
   const [soundEnabled, setSoundEnabled] = useState(() => {
     try { return localStorage.getItem("soundEnabled") !== "false"; } catch { return true; }
   });
@@ -391,6 +395,13 @@ export default function Dashboard() {
     }
   };
 
+  // Panel helpers: per-key lookup of the generic toggles, active count, and
+  // whether to open the sports panel by default (desktop yes, phone no).
+  const pm = Object.fromEntries(pmToggles.map(([k, on, , name, tip]) => [k, { on, name, tip }]));
+  const activeSports = [tennis, basketball, football, hockey, volley, f1, outright, whale,
+    ...pmToggles.map(t => t[1])].filter(Boolean).length;
+  const totalSports = 8 + pmToggles.length;
+
   const footballProvider = status?.football_provider;
   const setFootballProvider = async (p) => {
     if (!p || p === footballProvider) return;
@@ -429,225 +440,83 @@ export default function Dashboard() {
     <div className="min-h-screen lg:h-screen w-full flex flex-col bg-[#0A0A0A] text-white lg:overflow-hidden" data-testid="dashboard-root">
       <Toaster theme="dark" position="top-right" />
 
-      {/* TOP BAR */}
-      <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between px-3 md:px-6 py-3 border-b border-white/10 bg-[#121212] shrink-0" data-testid="top-bar">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+      {/* TOP BAR - row 1: brand + actions; row 2: live status + quotas */}
+      <header className="shrink-0 border-b border-white/10 bg-[#121212]" data-testid="top-bar">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 md:px-6 py-2.5">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className={`w-2 h-2 rounded-full shrink-0 ${tracking ? "bg-[#32D74B] pulse-dot" : "bg-zinc-600"}`} />
+            <span className="font-display uppercase tracking-tight text-lg md:text-xl font-bold truncate">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
+            <span className="hidden xl:inline ml-2 text-[10px] text-zinc-500 uppercase tracking-widest font-mono">Pinnacle · Polymarket · Player props</span>
+          </div>
+
           <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${tracking ? "bg-[#32D74B] pulse-dot" : "bg-zinc-600"}`} />
-            <span className="font-display uppercase tracking-tight text-lg md:text-xl font-bold">Pinnacle <span className="text-[#007AFF]">Drop</span> Monitor</span>
-          </div>
-          <span className="hidden sm:inline text-xs text-zinc-500 uppercase tracking-widest font-mono">Tennis, Basket, Calcio, Hockey &amp; Volley · H2H &amp; Totals</span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <StatusPill label="Last scan" value={status?.last_scan_at ? new Date(status.last_scan_at).toLocaleTimeString() : "—"} icon={<Clock size={14} />} />
-          <StatusPill label="Next scan" value={<Countdown to={status?.next_scan_at} />} icon={<Radio size={14} className="text-[#007AFF]" />} mono />
-          <StatusPill label="Drop ≥" value={`${threshold.toFixed(1)}%`} icon={<TrendingDown size={14} />} mono />
-
-          {provider === "theoddsapi" && status?.requests_remaining != null && (
-            <StatusPill label="Credits" value={status.requests_remaining} icon={<Activity size={14} />} mono />
-          )}
-
-          <div className="flex border border-white/15" data-testid="provider-switch">
-            {(settings?.providers || ["theoddsapi", "oddspapi"]).map(p => (
-              <button
-                key={p}
-                data-testid={`provider-${p}`}
-                onClick={() => setProvider(p)}
-                className={`px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-bold transition-colors ${
-                  provider === p ? "bg-[#007AFF] text-white" : "text-zinc-400 hover:bg-white/5"
-                }`}
-              >
-                {PROVIDER_LABELS[p] || p}
-              </button>
-            ))}
-          </div>
-
-          <button
-            data-testid="tracking-toggle"
-            onClick={toggleTracking}
-            className={`flex items-center gap-2 px-3 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              tracking
-                ? "border-[#32D74B]/40 bg-[#32D74B]/10 text-[#32D74B] hover:bg-[#32D74B]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            <Power size={14} /> {tracking ? "Tracking ON" : "Tracking OFF"}
-          </button>
-
-          <button
-            data-testid="tennis-toggle"
-            onClick={toggleTennis}
-            title="Traccia il tennis (ATP/WTA/Challenger/ITF, via OddsPapi)"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              tennis
-                ? "border-[#32D74B]/40 bg-[#32D74B]/10 text-[#32D74B] hover:bg-[#32D74B]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            🎾 {tennis ? "ON" : "OFF"}
-          </button>
-
-          <button
-            data-testid="basketball-toggle"
-            onClick={toggleBasketball}
-            title="Traccia anche il basket (NBA/WNBA/EuroLeague/EuroBasket, via OddsPapi)"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              basketball
-                ? "border-[#FF9F0A]/40 bg-[#FF9F0A]/10 text-[#FF9F0A] hover:bg-[#FF9F0A]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            🏀 {basketball ? "ON" : "OFF"}
-          </button>
-
-          <button
-            data-testid="football-toggle"
-            onClick={toggleFootball}
-            title="Traccia anche il calcio (Top-5 leghe europee + Champions/Europa/Conference League, via The Odds API)"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              football
-                ? "border-[#32D74B]/40 bg-[#32D74B]/10 text-[#32D74B] hover:bg-[#32D74B]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            ⚽ {football ? "ON" : "OFF"}
-          </button>
-
-          <button
-            data-testid="hockey-toggle"
-            onClick={toggleHockey}
-            title="Traccia anche l'hockey su ghiaccio (via OddsPapi)"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              hockey
-                ? "border-[#64D2FF]/40 bg-[#64D2FF]/10 text-[#64D2FF] hover:bg-[#64D2FF]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            🏒 {hockey ? "ON" : "OFF"}
-          </button>
-
-          <button
-            data-testid="volley-toggle"
-            onClick={toggleVolley}
-            title="Traccia il volley (SuperLega, Serie A1 femminile, coppe CEV e nazionali, via OddsPapi · solo H2H)"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              volley
-                ? "border-[#FFD60A]/40 bg-[#FFD60A]/10 text-[#FFD60A] hover:bg-[#FFD60A]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            🏐 {volley ? "ON" : "OFF"}
-          </button>
-
-          <button
-            data-testid="f1-toggle"
-            onClick={toggleF1}
-            title="Traccia i mercati Formula 1 su Polymarket (winner, podio, H2H) con cross-check Kalshi"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              f1
-                ? "border-[#FF2D55]/40 bg-[#FF2D55]/10 text-[#FF2D55] hover:bg-[#FF2D55]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            🏎 {f1 ? "ON" : "OFF"}
-          </button>
-
-          {pmToggles.map(([key, enabled, emoji, name, tip]) => (
             <button
-              key={key}
-              data-testid={`${key}-toggle`}
-              onClick={() => togglePmSport(key, enabled, name)}
-              title={tip}
-              className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-                enabled
-                  ? "border-[#FF2D55]/40 bg-[#FF2D55]/10 text-[#FF2D55] hover:bg-[#FF2D55]/20"
+              data-testid="tracking-toggle"
+              onClick={toggleTracking}
+              title={tracking ? "Tracciamento attivo (clic per sospendere tutti gli scan)" : "Tracciamento sospeso (clic per riattivare)"}
+              className={`flex items-center gap-2 px-3 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
+                tracking
+                  ? "border-[#32D74B]/40 bg-[#32D74B]/10 text-[#32D74B] hover:bg-[#32D74B]/20"
                   : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
               }`}
             >
-              {emoji} {enabled ? "ON" : "OFF"}
+              <Power size={14} /> <span className="hidden sm:inline">Tracking</span> {tracking ? "ON" : "OFF"}
             </button>
-          ))}
 
-          <button
-            data-testid="outright-toggle"
-            onClick={toggleOutright}
-            title="Traccia gli outright su Polymarket (vincitore CL/campionati, Pallone d'Oro, Slam tennis, golf) — monitorati dall'apertura alla chiusura del mercato, senza finestra 60 min"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              outright
-                ? "border-[#FFD60A]/40 bg-[#FFD60A]/10 text-[#FFD60A] hover:bg-[#FFD60A]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            🏆 {outright ? "ON" : "OFF"}
-          </button>
-
-          <button
-            data-testid="whale-toggle"
-            onClick={toggleWhale}
-            title="Monitor whale: rileva grandi ordini (≥$10k) su Polymarket sui mercati degli sport monitorati (calcio, tennis, basket, F1, MLB, outright)"
-            className={`px-2.5 py-1.5 border text-xs font-bold uppercase tracking-widest transition-colors ${
-              whale
-                ? "border-[#0A84FF]/40 bg-[#0A84FF]/10 text-[#0A84FF] hover:bg-[#0A84FF]/20"
-                : "border-white/20 bg-white/5 text-zinc-400 hover:bg-white/10"
-            }`}
-          >
-            🐋 {whale ? "ON" : "OFF"}
-          </button>
-
-          {football && (
-            <div className="flex border border-white/15" data-testid="football-provider-switch" title="Provider quote per il calcio">
-              {(settings?.providers || ["theoddsapi", "oddspapi"]).map(p => (
-                <button
-                  key={p}
-                  data-testid={`football-provider-${p}`}
-                  onClick={() => setFootballProvider(p)}
-                  className={`px-2 py-1.5 text-[10px] uppercase tracking-widest font-bold transition-colors ${
-                    footballProvider === p ? "bg-[#32D74B] text-black" : "text-zinc-400 hover:bg-white/5"
-                  }`}
-                >
-                  {PROVIDER_LABELS[p] || p}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <button
-            data-testid="sound-toggle"
-            onClick={toggleSound}
-            title={soundEnabled ? "Suono alert attivo (clic per disattivare)" : "Suono alert disattivato (clic per attivare)"}
-            className={`p-1.5 border border-white/15 transition-colors hover:bg-white/5 ${soundEnabled ? "text-white" : "text-zinc-500"}`}
-          >
-            {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
-          </button>
-
-          {status?.use_mock_data && (
             <button
-              data-testid="mock-toggle-off"
-              onClick={async () => { await axios.post(`${API}/mock/false`); await loadAll(); toast.info("Live API mode"); }}
-              className="text-[10px] uppercase tracking-widest text-[#FF9F0A] border border-[#FF9F0A]/40 bg-[#FF9F0A]/10 px-2 py-1 hover:bg-[#FF9F0A]/20"
+              data-testid="sound-toggle"
+              onClick={toggleSound}
+              title={soundEnabled ? "Suono alert attivo (clic per disattivare)" : "Suono alert disattivato (clic per attivare)"}
+              className={`p-2 border border-white/15 transition-colors hover:bg-white/5 ${soundEnabled ? "text-white" : "text-zinc-500"}`}
             >
-              DEMO MODE · click to disable
+              {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
             </button>
+
+            {status?.use_mock_data && (
+              <button
+                data-testid="mock-toggle-off"
+                onClick={async () => { await axios.post(`${API}/mock/false`); await loadAll(); toast.info("Live API mode"); }}
+                className="text-[10px] uppercase tracking-widest text-[#FF9F0A] border border-[#FF9F0A]/40 bg-[#FF9F0A]/10 px-2 py-1.5 hover:bg-[#FF9F0A]/20"
+              >
+                Demo · off
+              </button>
+            )}
+
+            <Button
+              data-testid="refresh-btn"
+              onClick={manualRefresh}
+              disabled={refreshing}
+              title="Esegui uno scan adesso"
+              className="rounded-none bg-[#007AFF] hover:bg-[#0056b3] text-white uppercase tracking-wider text-xs font-bold px-3"
+            >
+              <RefreshCw size={14} className={`sm:mr-2 ${refreshing ? "animate-spin" : ""}`} />
+              <span className="hidden sm:inline">{refreshing ? "Scanning" : "Refresh"}</span>
+            </Button>
+
+            <SettingsDialog
+              settings={settings}
+              onSaved={loadAll}
+              customSound={customSound}
+              onUploadSound={uploadSound}
+              onResetSound={resetSound}
+              onPreviewSound={playAlertSound}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 px-3 md:px-6 py-1.5 border-t border-white/5 bg-[#0E0E0E]">
+          <StatusPill label="Last scan" value={status?.last_scan_at ? new Date(status.last_scan_at).toLocaleTimeString() : "—"} icon={<Clock size={13} />} />
+          <StatusPill label="Next scan" value={<Countdown to={status?.next_scan_at} />} icon={<Radio size={13} className="text-[#007AFF]" />} mono />
+          <StatusPill label="Drop ≥" value={`${threshold.toFixed(1)}%`} icon={<TrendingDown size={13} />} mono />
+          {provider === "theoddsapi" && status?.requests_remaining != null && (
+            <StatusPill label="Credits" value={status.requests_remaining} icon={<Activity size={13} />} mono />
           )}
-
-          <Button
-            data-testid="refresh-btn"
-            onClick={manualRefresh}
-            disabled={refreshing}
-            className="rounded-none bg-[#007AFF] hover:bg-[#0056b3] text-white uppercase tracking-wider text-xs font-bold px-4"
-          >
-            <RefreshCw size={14} className={`mr-2 ${refreshing ? "animate-spin" : ""}`} />
-            {refreshing ? "Scanning" : "Refresh"}
-          </Button>
-
-          <SettingsDialog
-            settings={settings}
-            onSaved={loadAll}
-            customSound={customSound}
-            onUploadSound={uploadSound}
-            onResetSound={resetSound}
-            onPreviewSound={playAlertSound}
+          <QuotaPill
+            label="PropLine"
+            remaining={status?.propline_requests_remaining}
+            limit={status?.propline_daily_limit}
+            status={status?.propline_status}
+            testId="propline-quota-pill"
           />
         </div>
       </header>
@@ -666,6 +535,86 @@ export default function Dashboard() {
       <div className="flex flex-col lg:flex-row flex-1 lg:overflow-hidden">
         {/* SIDEBAR */}
         <aside className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-white/10 bg-[#0A0A0A] p-4 md:p-6 flex flex-col gap-8 lg:overflow-y-auto shrink-0" data-testid="sidebar">
+          <Collapsible
+            title="Sport & mercati"
+            icon={<Layers size={12} />}
+            defaultOpen={isDesktop}
+            testId="sports-panel"
+            right={<span className="font-mono normal-case tracking-normal text-zinc-400">{activeSports}/{totalSports} attivi</span>}
+          >
+            <GroupLabel note="Pinnacle · OddsPapi">⬇️ Drop Pinnacle</GroupLabel>
+            <div className="grid grid-cols-2 gap-1">
+              <SportToggle testId="tennis-toggle" emoji="🎾" label="Tennis" sub="ATP · WTA · ITF" on={tennis} onClick={toggleTennis} tone="#32D74B"
+                title="Traccia il tennis (ATP/WTA/Challenger/ITF)" />
+              <SportToggle testId="basketball-toggle" emoji="🏀" label="Basket" sub="NBA · EuroLeague" on={basketball} onClick={toggleBasketball} tone="#FF9F0A"
+                title="Traccia il basket (NBA/WNBA/EuroLeague/EuroBasket)" />
+              <SportToggle testId="football-toggle" emoji="⚽" label="Calcio" sub="Top leghe · UEFA" on={football} onClick={toggleFootball} tone="#32D74B"
+                title="Traccia il calcio (campionati principali, coppe UEFA, Nations League)" />
+              <SportToggle testId="hockey-toggle" emoji="🏒" label="Hockey" sub="NHL e leghe" on={hockey} onClick={toggleHockey} tone="#64D2FF"
+                title="Traccia l'hockey su ghiaccio" />
+              <SportToggle testId="volley-toggle" emoji="🏐" label="Volley" sub="SuperLega · CEV" on={volley} onClick={toggleVolley} tone="#FFD60A"
+                title="Traccia il volley (SuperLega, Serie A1 femminile, coppe CEV, nazionali · solo H2H)" />
+            </div>
+            <div className="mt-2 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-widest text-zinc-500">Fonte tennis</span>
+                <Segmented
+                  testId="provider-switch"
+                  itemTestId="provider"
+                  options={settings?.providers || ["theoddsapi", "oddspapi"]}
+                  value={provider}
+                  onChange={setProvider}
+                  color="#007AFF"
+                />
+              </div>
+              {football && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-500">Fonte calcio</span>
+                  <Segmented
+                    testId="football-provider-switch"
+                    itemTestId="football-provider"
+                    options={settings?.providers || ["theoddsapi", "oddspapi"]}
+                    value={footballProvider}
+                    onChange={setFootballProvider}
+                    color="#32D74B"
+                  />
+                </div>
+              )}
+            </div>
+
+            <GroupLabel note="Polymarket · gratis">📉 Prediction markets</GroupLabel>
+            <div className="grid grid-cols-2 gap-1">
+              <SportToggle testId="f1-toggle" emoji="🏎️" label="Formula 1" sub="gara · pole · sprint" on={f1} onClick={toggleF1} tone="#FF2D55"
+                title="Formula 1 su Polymarket (vincitore, podio, pole, sprint) con cross-check Kalshi" />
+              <SportToggle testId="mlb-toggle" emoji="⚾" label="MLB" sub="moneyline" on={pm.mlb.on} onClick={() => togglePmSport("mlb", pm.mlb.on, pm.mlb.name)} tone="#FF2D55"
+                title={pm.mlb.tip} />
+              <SportToggle testId="nba_props-toggle" emoji="🏀" label="Props NBA" sub="Polymarket" on={pm.nba_props.on} onClick={() => togglePmSport("nba_props", pm.nba_props.on, pm.nba_props.name)} tone="#FF2D55"
+                title={pm.nba_props.tip} />
+              <SportToggle testId="outright-toggle" emoji="🏆" label="Outright" sub="vincitori torneo" on={outright} onClick={toggleOutright} tone="#FFD60A"
+                title="Outright su Polymarket (vincitore CL/campionati, Pallone d'Oro, Slam, golf) dall'apertura alla chiusura" />
+              <SportToggle testId="whale-toggle" emoji="🐋" label="Whale" sub="ordini grandi" on={whale} onClick={toggleWhale} tone="#0A84FF"
+                title="Grandi ordini su Polymarket sui mercati degli sport monitorati" />
+            </div>
+
+            <GroupLabel note="PropLine · multi-book">📈 Player props</GroupLabel>
+            <div className="grid grid-cols-2 gap-1">
+              <SportToggle testId="props_nba-toggle" emoji="🏀" label="NBA" sub="FanDuel + book" on={pm.props_nba.on} onClick={() => togglePmSport("props_nba", pm.props_nba.on, pm.props_nba.name)} tone="#BF5AF2"
+                title={pm.props_nba.tip} />
+              <SportToggle testId="props_seriea-toggle" emoji="⚽" label="Serie A" sub="tiri · tiri in porta" on={pm.props_seriea.on} onClick={() => togglePmSport("props_seriea", pm.props_seriea.on, pm.props_seriea.name)} tone="#BF5AF2"
+                title={pm.props_seriea.tip} />
+              <SportToggle testId="props_epl-toggle" emoji="⚽" label="Premier" sub="tiri · tiri in porta" on={pm.props_epl.on} onClick={() => togglePmSport("props_epl", pm.props_epl.on, pm.props_epl.name)} tone="#BF5AF2"
+                title={pm.props_epl.tip} />
+            </div>
+            <div className="mt-2">
+              <QuotaMeter
+                remaining={status?.propline_requests_remaining}
+                limit={status?.propline_daily_limit}
+                status={status?.propline_status}
+                checkedAt={status?.propline_checked_at}
+              />
+            </div>
+          </Collapsible>
+
           <SectionTitle icon={<Activity size={12} />}>Session</SectionTitle>
           <div className="grid grid-cols-2 gap-1 -mt-6">
             <StatBox label="Matches" value={totalFixtures} testId="stat-matches" />
@@ -696,12 +645,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div>
-            <SectionTitle icon={<TrendingDown size={12} />}>Source</SectionTitle>
-            <BookRow label="Pinnacle" role="Sharp" />
-            <div className="mt-2 text-[10px] text-zinc-600 leading-relaxed">
-              Traccia i cali di quota H2H e Total Games su Pinnacle. Quando cala, il denaro sharp si è mosso — i soft book seguono in ritardo.
-            </div>
           </div>
 
           {status?.last_scan_error && (
@@ -922,6 +865,147 @@ function Countdown({ to }) {
   return <>{fmtCountdown(sec)}</>;
 }
 
+// Collapsible sidebar section (the sports panel starts closed on phones so the
+// odds table is reachable without scrolling past a dozen toggles).
+function Collapsible({ title, icon, defaultOpen = true, right, testId, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div data-testid={testId}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.2em] font-semibold text-zinc-500 hover:text-zinc-300"
+      >
+        <span className="flex items-center gap-2">{icon} {title}</span>
+        <span className="flex items-center gap-2">
+          {right}
+          <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+        </span>
+      </button>
+      {open && <div className="mt-1">{children}</div>}
+    </div>
+  );
+}
+
+function GroupLabel({ children, note }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2 mt-4 mb-1.5">
+      <span className="text-[10px] uppercase tracking-widest text-zinc-300 font-semibold">{children}</span>
+      <span className="text-[9px] uppercase tracking-widest text-zinc-600">{note}</span>
+    </div>
+  );
+}
+
+// One sport/market on-off control: emoji + name + scope, with a small switch.
+function SportToggle({ emoji, label, sub, on, onClick, title, testId, tone = "#32D74B" }) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onClick}
+      title={title}
+      aria-pressed={!!on}
+      className={`flex items-center justify-between gap-2 w-full px-2 py-1.5 border text-left transition-colors ${
+        on ? "border-white/15 bg-white/[0.04] hover:bg-white/[0.08]" : "border-white/10 hover:bg-white/[0.04]"
+      }`}
+    >
+      <span className="flex items-center gap-2 min-w-0">
+        <span className={`text-sm leading-none ${on ? "" : "grayscale opacity-40"}`}>{emoji}</span>
+        <span className="min-w-0">
+          <span className={`block text-[11px] font-semibold uppercase tracking-wider truncate ${on ? "text-white" : "text-zinc-500"}`}>{label}</span>
+          {sub && <span className="block text-[9px] text-zinc-600 truncate">{sub}</span>}
+        </span>
+      </span>
+      <span
+        className="relative inline-block h-3.5 w-6 shrink-0 border transition-colors"
+        style={{ borderColor: on ? tone : "rgba(255,255,255,0.2)", background: on ? `${tone}33` : "transparent" }}
+      >
+        <span
+          className="absolute top-[2px] h-2 w-2 transition-all"
+          style={{ left: on ? 12 : 2, background: on ? tone : "#52525B" }}
+        />
+      </span>
+    </button>
+  );
+}
+
+// Two-way segmented switch (tennis / football odds provider).
+function Segmented({ options, value, onChange, testId, itemTestId, color }) {
+  return (
+    <div className="flex border border-white/15" data-testid={testId}>
+      {options.map(p => (
+        <button
+          key={p}
+          type="button"
+          data-testid={`${itemTestId}-${p}`}
+          onClick={() => onChange(p)}
+          className={`px-2 py-1 text-[9px] uppercase tracking-widest font-bold transition-colors ${
+            value === p ? "text-black" : "text-zinc-400 hover:bg-white/5"
+          }`}
+          style={value === p ? { background: color } : undefined}
+        >
+          {PROVIDER_LABELS[p] || p}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function quotaColor(remaining, limit) {
+  if (remaining == null) return "#71717A";
+  const pct = remaining / (limit || 1000);
+  return pct > 0.3 ? "#32D74B" : pct > 0.1 ? "#FF9F0A" : "#FF3B30";
+}
+
+// Compact top-bar counter of the PropLine requests left today.
+function QuotaPill({ label, remaining, limit, status, testId }) {
+  if (remaining == null && !status) return null;
+  const bad = (status || "").startsWith("✗");
+  const color = bad ? "#FF3B30" : quotaColor(remaining, limit);
+  return (
+    <div className="flex items-center gap-2 text-xs" data-testid={testId} title={status || ""}>
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: color }} />
+      <span className="text-zinc-500 uppercase tracking-widest text-[10px]">{label}</span>
+      <span className="font-mono" style={{ color }}>
+        {remaining ?? "—"}<span className="text-zinc-600">/{limit || 1000}</span>
+      </span>
+    </div>
+  );
+}
+
+// Sidebar meter: PropLine daily quota with a bar, reset time and key status.
+function QuotaMeter({ remaining, limit, status, checkedAt }) {
+  if (remaining == null && !status) {
+    return (
+      <div className="border border-white/10 p-2.5 text-[10px] text-zinc-600" data-testid="propline-quota">
+        PropLine: imposta la key in Settings per i player props dei book.
+      </div>
+    );
+  }
+  const lim = limit || 1000;
+  const pct = remaining != null ? Math.max(0, Math.min(100, (remaining / lim) * 100)) : 0;
+  const bad = (status || "").startsWith("✗");
+  const color = bad ? "#FF3B30" : quotaColor(remaining, lim);
+  return (
+    <div className="border border-white/10 p-2.5" data-testid="propline-quota">
+      <div className="flex items-baseline justify-between text-[10px] uppercase tracking-widest text-zinc-500">
+        <span>Chiamate PropLine oggi</span>
+        <span className="font-mono text-sm" style={{ color }}>
+          {remaining ?? "—"}<span className="text-zinc-600 text-[10px]"> / {lim.toLocaleString()}</span>
+        </span>
+      </div>
+      <div className="mt-1.5 h-1 bg-white/10">
+        <div className="h-1 transition-all" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      {bad && <div className="mt-1.5 text-[10px] text-[#FF3B30]">{status}</div>}
+      <div className="mt-1 text-[10px] text-zinc-600">
+        Reset alle 00:00 UTC{checkedAt ? ` · agg. ${new Date(checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+      </div>
+    </div>
+  );
+}
+
 function SectionTitle({ children, icon }) {
   return (
     <div className="text-[10px] uppercase tracking-[0.2em] font-semibold text-zinc-500 mb-4 flex items-center gap-2">
@@ -943,14 +1027,6 @@ function StatBox({ label, value, accent, testId }) {
     <div className="border border-white/10 p-3 bg-[#0A0A0A]" data-testid={testId}>
       <div className="text-[10px] uppercase tracking-widest text-zinc-500">{label}</div>
       <div className={`font-display text-3xl font-bold tracking-tight ${accent ? "text-[#32D74B]" : "text-white"}`}>{value}</div>
-    </div>
-  );
-}
-function BookRow({ label, role }) {
-  return (
-    <div className="flex items-center justify-between border border-white/10 px-3 py-2">
-      <span className="text-white">{label}</span>
-      <span className="text-[10px] uppercase tracking-widest text-[#007AFF]">{role}</span>
     </div>
   );
 }
