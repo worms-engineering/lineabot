@@ -534,7 +534,7 @@ export default function Dashboard() {
       {/* MAIN */}
       <div className="flex flex-col lg:flex-row flex-1 lg:overflow-hidden">
         {/* SIDEBAR */}
-        <aside className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-white/10 bg-[#0A0A0A] p-4 md:p-6 flex flex-col gap-8 lg:overflow-y-auto shrink-0" data-testid="sidebar">
+        <aside className="w-full lg:w-[22rem] border-b lg:border-b-0 lg:border-r border-white/10 bg-[#0A0A0A] p-4 md:p-6 flex flex-col gap-5 lg:gap-8 lg:overflow-y-auto shrink-0" data-testid="sidebar">
           <Collapsible
             title="Sport & mercati"
             icon={<Layers size={12} />}
@@ -615,17 +615,18 @@ export default function Dashboard() {
             </div>
           </Collapsible>
 
+          <div>
           <SectionTitle icon={<Activity size={12} />}>Session</SectionTitle>
-          <div className="grid grid-cols-2 gap-1 -mt-6">
+          <div className="grid grid-cols-4 lg:grid-cols-2 gap-1 -mt-2 lg:mt-0">
             <StatBox label="Matches" value={totalFixtures} testId="stat-matches" />
             <StatBox label="Drops now" value={activeDrops} accent testId="stat-drops" />
             <StatBox label="Alerts sent" value={status?.last_scan_stats?.alerts_sent ?? 0} testId="stat-alerts" />
             <StatBox label="Tracked" value={status?.last_scan_stats?.selections_tracked ?? 0} testId="stat-tracked" />
           </div>
+          </div>
 
-          <div>
-            <SectionTitle icon={<Filter size={12} />}>Filters</SectionTitle>
-            <div className="space-y-6">
+          <Collapsible title="Filters" icon={<Filter size={12} />} defaultOpen={isDesktop} testId="filters-panel">
+            <div className="space-y-6 mt-3">
               <div className="flex items-center justify-between">
                 <Label className="text-xs uppercase tracking-widest text-zinc-400">Only drops</Label>
                 <Switch data-testid="filter-only-drops" checked={onlyDrops} onCheckedChange={setOnlyDrops} />
@@ -643,7 +644,7 @@ export default function Dashboard() {
                 />
               </div>
             </div>
-          </div>
+          </Collapsible>
 
           {status?.last_scan_error && (
             <div className="border border-[#FF3B30]/40 bg-[#FF3B30]/5 p-3 text-xs">
@@ -911,7 +912,7 @@ function SportToggle({ emoji, label, sub, on, onClick, title, testId, tone = "#3
       <span className="flex items-center gap-2 min-w-0">
         <span className={`text-sm leading-none ${on ? "" : "grayscale opacity-40"}`}>{emoji}</span>
         <span className="min-w-0">
-          <span className={`block text-[11px] font-semibold uppercase tracking-wider truncate ${on ? "text-white" : "text-zinc-500"}`}>{label}</span>
+          <span className={`block text-[11px] font-semibold uppercase tracking-wide truncate ${on ? "text-white" : "text-zinc-500"}`}>{label}</span>
           {sub && <span className="block text-[9px] text-zinc-600 truncate">{sub}</span>}
         </span>
       </span>
@@ -1022,9 +1023,9 @@ function StatusPill({ label, value, icon, mono }) {
 }
 function StatBox({ label, value, accent, testId }) {
   return (
-    <div className="border border-white/10 p-3 bg-[#0A0A0A]" data-testid={testId}>
-      <div className="text-[10px] uppercase tracking-widest text-zinc-500">{label}</div>
-      <div className={`font-display text-3xl font-bold tracking-tight ${accent ? "text-[#32D74B]" : "text-white"}`}>{value}</div>
+    <div className="border border-white/10 p-2 lg:p-3 bg-[#0A0A0A] min-w-0" data-testid={testId}>
+      <div className="text-[9px] lg:text-[10px] uppercase tracking-wider lg:tracking-widest text-zinc-500 truncate">{label}</div>
+      <div className={`font-display text-xl lg:text-3xl font-bold tracking-tight ${accent ? "text-[#32D74B]" : "text-white"}`}>{value}</div>
     </div>
   );
 }
