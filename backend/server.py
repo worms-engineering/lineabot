@@ -208,6 +208,11 @@ class StatusOut(BaseModel):
     quota_warning: str | None
     last_key_rotation_at: str | None
     last_key_rotation_error: str | None
+    # PropLine daily quota as of its last response (dashboard counter).
+    propline_requests_remaining: int | None = None
+    propline_daily_limit: int | None = None
+    propline_status: str | None = None
+    propline_checked_at: str | None = None
 
 
 class TrackingIn(BaseModel):
@@ -295,6 +300,7 @@ async def get_status():
         quota_warning=_quota_warning(),
         last_key_rotation_at=monitor.last_rotation_at.isoformat() if monitor.last_rotation_at else None,
         last_key_rotation_error=monitor.last_rotation_error,
+        **_propline_quota(),
     )
 
 
@@ -382,6 +388,20 @@ def _settings_out() -> SettingsOut:
 @api.get("/settings", response_model=SettingsOut)
 async def get_settings():
     return _settings_out()
+
+
+def _propline_quota() -> dict:
+    pl = monitor.clients.get("propline")
+    if pl is None or not getattr(pl, "api_key", None):
+        return {}
+    ok_at = getattr(pl, "last_ok_at", None)
+    return {
+        "propline_requests_remaining": getattr(pl, "requests_remaining", None),
+        "propline_daily_limit": getattr(pl, "daily_limit", None),
+        "propline_status": _propline_status(),
+        "propline_checked_at": (datetime.fromtimestamp(ok_at, tz=timezone.utc).isoformat()
+                                if ok_at else None),
+    }
 
 
 def _propline_status() -> str | None:

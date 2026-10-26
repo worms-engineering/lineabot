@@ -378,6 +378,7 @@ class PropLineClient:
         self.use_mock = os.environ.get("USE_MOCK_DATA", "false").lower() == "true"
         self._client = httpx.AsyncClient(timeout=30.0)
         self.requests_remaining: int | None = None
+        self.daily_limit: int | None = None  # X-Daily-Limit (plan's daily cap)
         self.quota_exhausted = False
         self.ip_blocked = False
         # sport_key -> (monotonic fetch time, [commence epochs])
@@ -405,12 +406,14 @@ class PropLineClient:
         except Exception as e:
             self.last_error = f"PropLine non raggiungibile ({type(e).__name__})"
             raise
-        rem = resp.headers.get("X-Daily-Remaining")
-        if rem is not None:
-            try:
-                self.requests_remaining = int(rem)
-            except ValueError:
-                pass
+        for attr, header in (("requests_remaining", "X-Daily-Remaining"),
+                             ("daily_limit", "X-Daily-Limit")):
+            val = resp.headers.get(header)
+            if val is not None:
+                try:
+                    setattr(self, attr, int(val))
+                except ValueError:
+                    pass
         if resp.status_code == 429:
             body = {}
             try:
