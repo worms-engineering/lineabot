@@ -148,13 +148,15 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
   `PROPLINE_SOCCER_INTERVAL` secondi, default 120) con la stessa regola multi-book.
   La stessa key fornisce anche il **miglior prezzo ITA** negli alert di calcio e tennis (Snai, Eurobet,
   AdmiralBet), unito ai book .it di The Odds API
-- `PROPS_STEAM_MIN_BOOKS` / `PROPS_STEAM_BOOK_MOVE` — regola multi-book dei props PropLine: l'alert
-  parte solo se almeno N book indipendenti (default 2) hanno accorciato la stessa linea di almeno
-  la soglia **e** il consenso (mediana di tutti i book) è sceso della stessa soglia. Anti-spam: una
-  linea già segnalata riparte solo su un nuovo minimo di almeno un'altra soglia; più linee dello
-  stesso giocatore nello stesso scan arrivano in un solo messaggio; dopo un alert, le altre linee del
-  giocatore restano in pausa `PROPS_PLAYER_COOLDOWN` secondi (default 1800). La soglia si regola dalla dashboard (Settings → Drop threshold
-  props); `PROPS_STEAM_BOOK_MOVE` è solo il valore iniziale (default 0.08 = 8%)
+- `PROPS_STEAM_MIN_BOOKS` / `PROPS_STEAM_BOOK_MOVE` / `PROPS_LEADER_BOOKS` — regola dei props PropLine:
+  l'alert parte appena almeno N book **leader** (default 2 tra `pinnacle,novig,fanduel,draftkings,bovada`,
+  i più allineati al mercato nel report di accuratezza PropLine) hanno accorciato la linea della soglia,
+  senza aspettare la mediana di tutti i book; l'alert elenca i book ancora fermi e il consenso.
+  Anti-spam: una linea già segnalata riparte solo su un nuovo minimo di almeno un'altra soglia; più
+  linee dello stesso giocatore nello stesso scan arrivano in un solo messaggio; dopo un alert, le altre
+  linee del giocatore restano in pausa `PROPS_PLAYER_COOLDOWN` secondi (default 1800). La soglia si
+  regola dalla dashboard (Settings → Drop threshold props); `PROPS_STEAM_BOOK_MOVE` è solo il valore
+  iniziale (default 0.08 = 8%)
 - `PROPLINE_SOCCER_RESERVE` — sotto queste richieste PropLine rimaste nel giorno (default 150) i props
   di calcio (Serie A, Premier) si mettono in pausa fino al reset, per tenere NBA e miglior prezzo ITA
 - `NBA_PROPS_MIN_LIQUIDITY` / `NBA_PROPS_MAX_SPREAD` — filtro dei player props NBA su Polymarket:

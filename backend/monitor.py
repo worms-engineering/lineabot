@@ -66,6 +66,18 @@ WHALE_AGG_SECONDS = 15 * 60
 # books join. The threshold is the dashboard "props" slider
 # (props_drop_threshold); PROPS_STEAM_BOOK_MOVE only seeds its default.
 PROPS_STEAM_MIN_BOOKS = int(os.environ.get("PROPS_STEAM_MIN_BOOKS", "2"))
+# "Leader" books for props: the ones "in line" with the market in PropLine's
+# accuracy report (NBA, 120 d: Novig +5.9, FanDuel -0.3, DraftKings -0.4,
+# Pinnacle -2.9, Bovada -2.9 bp). A props alert fires as soon as
+# PROPS_STEAM_MIN_BOOKS of THESE have moved - without waiting for the median of
+# every book, which only moves once about half the market (soft books
+# included) has already repriced. Books that trail the market (Fanatics,
+# 1xBet, Kalshi, Courtside) or share a feed (the Kambi group) are still shown
+# but never count toward the trigger. Bovada matters for the Premier League:
+# FanDuel prices few EPL props, DraftKings + Bovada cover nearly all of them.
+PROPS_LEADER_BOOKS = set(
+    b.strip() for b in os.environ.get(
+        "PROPS_LEADER_BOOKS", "pinnacle,novig,fanduel,draftkings,bovada").split(",") if b.strip())
 # Player-prop sports (sportsbook via PropLine and Polymarket). On these only the
 # OVER side can alert: Italian books don't price player-prop Unders, so an
 # Under move isn't actionable. Unders are still tracked - they show up as the
@@ -972,9 +984,20 @@ class TennisMonitor:
                     for bk, p in book_prices.items():
                         o = b_open.get(bk)
                         if b_obs[bk] >= 3 and o and p < o and (o - p) / o >= pth:
-                            steam_moves.append({"book": pl_book_label(bk), "from": o, "to": p,
-                                                "move": (o - p) / o})
-                    # Consensus over the books with a settled baseline.
+                            steam_moves.append({"key": bk, "book": pl_book_label(bk), "from": o,
+                                                "to": p, "move": (o - p) / o,
+                                                "leader": bk in PROPS_LEADER_BOOKS})
+                    leader_moves = [m for m in steam_moves if m["leader"]]
+                    moved_keys = {m["key"] for m in steam_moves}
+                    # Books still at (or near) their old price: where the value is.
+                    steam_flat = [{"book": pl_book_label(bk), "price": p}
+                                  for bk, p in book_prices.items() if bk not in moved_keys]
+                    # Leaders' move (median of the leaders that moved).
+                    l_open = statistics.median([m["from"] for m in leader_moves]) if leader_moves else 0.0
+                    l_now = statistics.median([m["to"] for m in leader_moves]) if leader_moves else 0.0
+                    l_move = (l_open - l_now) / l_open if l_open and l_now < l_open else 0.0
+                    # Consensus over the books with a settled baseline (shown in
+                    # the alert for context; no longer a trigger condition).
                     settled = [bk for bk in book_prices if b_obs[bk] >= 3 and b_open.get(bk)]
                     c_open = statistics.median([b_open[bk] for bk in settled]) if settled else 0.0
                     c_now = statistics.median([book_prices[bk] for bk in settled]) if settled else 0.0
@@ -984,10 +1007,9 @@ class TennisMonitor:
                     cd_key = (sport, match_id, player_key)
                     cd_at = self._prop_player_alerted.get(cd_key)
                     if (prev and observations >= 3 and fresh and not suspect_live
-                            and len(steam_moves) >= PROPS_STEAM_MIN_BOOKS
-                            and c_move >= pth
+                            and len(leader_moves) >= PROPS_STEAM_MIN_BOOKS
                             # A: an already-alerted line needs a new low
-                            and (not last_alert or c_now <= last_alert * (1 - pth))
+                            and (not last_alert or l_now <= last_alert * (1 - pth))
                             # C: other lines of a player alerted recently wait
                             and (last_alert or cd_at is None
                                  or now_ts - cd_at >= PROPS_PLAYER_COOLDOWN)):
@@ -1011,8 +1033,8 @@ class TennisMonitor:
                     is_drop = False  # props: Over only (Unders not priced by ITA books)
 
                 if steam_extra and is_drop:
-                    # Consensus at this alert: the line re-alerts only below it.
-                    steam_extra["steam_alert_price"] = c_now
+                    # Leaders' price at this alert: the line re-alerts only below it.
+                    steam_extra["steam_alert_price"] = l_now
 
                 line_ops.append(UpdateOne(
                     {"_id": key},
@@ -1047,11 +1069,16 @@ class TennisMonitor:
                     a_sel, a_prev, a_curr, a_last, a_open = (
                         sel, prev_price, curr, drop_last, drop_from_open)
                     if steam_moves:
-                        # The alert reports the consensus (median across the
-                        # books) move and lists every book that moved.
-                        a_prev, a_curr = c_open, c_now
-                        a_last = a_open = c_move
-                        a_sel = {**sel, "steam": sorted(steam_moves, key=lambda m: -m["move"])}
+                        # The alert reports the leaders' move, every book that
+                        # moved, the books still at the old price and the
+                        # consensus for context.
+                        a_prev, a_curr = l_open, l_now
+                        a_last = a_open = l_move
+                        a_sel = {**sel,
+                                 "steam": sorted(steam_moves, key=lambda m: -m["move"]),
+                                 "steam_leaders": len(leader_moves),
+                                 "steam_flat": sorted(steam_flat, key=lambda f: -f["price"]),
+                                 "steam_consensus": (c_open, c_now, c_move)}
                     args = (match, a_sel, sport, provider, a_prev, a_curr, a_last,
                             a_open, siblings, now_dt, dry_run_notify)
                     if steam_moves:
@@ -1129,8 +1156,8 @@ class TennisMonitor:
                          if start_ts else "")
             items = sorted(group, key=lambda a: -a[6])  # strongest consensus move first
             player = items[0][1].get("player") or items[0][1].get("market_name")
-            max_books = max(len(a[1].get("steam") or []) for a in items)
-            lines = [f"<b>📈 STEAM PROPS ({len(items)} linee, fino a {max_books} book) — {esc(sport_tag)}</b>",
+            max_books = max((a[1].get("steam_leaders") or 0) for a in items)
+            lines = [f"<b>📈 STEAM PROPS ({len(items)} linee, fino a {max_books} leader) — {esc(sport_tag)}</b>",
                      f"{esc(str(match.get('player1')))} vs {esc(str(match.get('player2')))}",
                      f"{esc(match.get('tournament') or '')}" + (f" · start {start_str}" if start_str else ""),
                      f"👤 <b>{esc(str(player))}</b>"]
@@ -1143,7 +1170,12 @@ class TennisMonitor:
                     f"{len(moved)} book"
                     + (f" · Under {under['price']:.2f}" if under and under.get("price") else ""))
                 lines.append("    🔥 " + " · ".join(
-                    f"{esc(m['book'])} {m['from']:.2f}→{m['to']:.2f}" for m in moved))
+                    f"{esc(m['book'])}{'★' if m.get('leader') else ''} {m['from']:.2f}→{m['to']:.2f}"
+                    for m in moved))
+                flat = sel.get("steam_flat") or []
+                if flat:
+                    lines.append("    ⏳ fermi: " + " · ".join(
+                        f"{esc(f['book'])} {f['price']:.2f}" for f in flat))
             text = "\n".join(lines)
             tg: dict = {"ok": False}
             if not dry_run_notify:
@@ -1446,11 +1478,11 @@ class TennisMonitor:
             move_line = (f"{prev_price:.2f} → <b>{curr:.2f}</b> "
                          f"(<b>-{drop_last * 100:.1f}%</b>) · quote Polymarket")
         elif match.get("provider") == "propline":
-            # Sportsbook props via PropLine, multi-book steam: the move shown is
-            # the consensus (median across the books quoting the line).
-            steam = sel.get("steam") or []
-            header = f"📈 STEAM PROPS ({len(steam)} book) — " + esc(sport_tag)
-            move_line = (f"Consenso {prev_price:.2f} → <b>{curr:.2f}</b> "
+            # Sportsbook props via PropLine: triggered by the leader books; the
+            # move shown is theirs (median of the leaders that moved).
+            n_lead = sel.get("steam_leaders") or len(sel.get("steam") or [])
+            header = f"📈 STEAM PROPS ({n_lead} leader) — " + esc(sport_tag)
+            move_line = (f"Leader {prev_price:.2f} → <b>{curr:.2f}</b> "
                          f"(<b>-{drop_last * 100:.1f}%</b>)")
         else:
             header = "⬇️ PINNACLE DROP — " + esc(sport_tag)
@@ -1476,11 +1508,20 @@ class TennisMonitor:
             lines.append("📊 Altre quote: " + " · ".join(parts))
         steam = sel.get("steam") or []
         if steam:
-            lines.append("🔥 Book in movimento: " + " · ".join(
-                f"{esc(m['book'])} {m['from']:.2f}→<b>{m['to']:.2f}</b> (-{m['move'] * 100:.1f}%)"
-                for m in steam))
-        # Same prop at the other books (PropLine selections carry them).
-        others = sel.get("others") or []
+            lines.append("🔥 In movimento: " + " · ".join(
+                f"{esc(m['book'])}{'★' if m.get('leader') else ''} {m['from']:.2f}→<b>{m['to']:.2f}</b> "
+                f"(-{m['move'] * 100:.1f}%)" for m in steam))
+            flat = sel.get("steam_flat") or []
+            if flat:
+                lines.append("⏳ Ancora fermi: " + " · ".join(
+                    f"{esc(f['book'])} <b>{f['price']:.2f}</b>" for f in flat))
+            cons = sel.get("steam_consensus")
+            if cons and cons[0]:
+                lines.append(f"📊 Consenso tutti i book: {cons[0]:.2f} → {cons[1]:.2f} "
+                             f"(-{cons[2] * 100:.1f}%)")
+        # Same prop at the other books (PropLine selections carry them); a
+        # steam alert already lists every book above.
+        others = [] if steam else (sel.get("others") or [])
         if others:
             lines.append("📚 Altri book: " + " · ".join(
                 f"{esc(str(o['book']))} <b>{o['price']:.2f}</b>" for o in others))

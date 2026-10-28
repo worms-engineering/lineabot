@@ -387,7 +387,7 @@ export default function Dashboard() {
     ["props_nba", !!status?.props_nba_enabled, "🏀 PROPS FD", "NBA player props (book)",
       "Player props NBA dei bookmaker via PropLine: alert solo se 2+ book muovono insieme. Serve la key PropLine."],
     ["props_seriea", !!status?.props_seriea_enabled, "⚽ PROPS SA", "Serie A player props",
-      "Tiri in porta e tiri della Serie A via PropLine (book USA): solo Over, alert solo se 2+ book e il consenso muovono oltre la soglia props. Serve la key PropLine."],
+      "Tiri in porta e tiri della Serie A via PropLine (book USA): solo Over, alert appena 2 book leader (FanDuel, DraftKings, Bovada, Pinnacle, Novig) muovono oltre la soglia props. Serve la key PropLine."],
     ["props_epl", !!status?.props_epl_enabled, "⚽ PROPS EPL", "Premier League player props",
       "Tiri in porta e tiri della Premier League via PropLine (book USA): solo Over, stessa regola multi-book. Serve la key PropLine."],
   ];
@@ -1167,7 +1167,7 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
               <span className="font-mono text-white">{propsDrop.toFixed(1)}%</span>
             </div>
             <Slider data-testid="settings-props-drop-slider" min={2} max={20} step={0.5} value={[propsDrop]} onValueChange={(v) => setPropsDrop(v[0])} />
-            <div className="text-[10px] text-zinc-600 mt-2">Player props dei book (NBA, Serie A, Premier): l'alert parte solo se almeno 2 book E il consenso di tutti i book scendono di questa percentuale. Solo Over (gli Under non sono quotati sui book italiani).</div>
+            <div className="text-[10px] text-zinc-600 mt-2">Player props dei book (NBA, Serie A, Premier): l'alert parte appena almeno 2 book leader (FanDuel, DraftKings, Bovada, Pinnacle, Novig) scendono di questa percentuale, senza aspettare il resto del mercato; l'alert mostra i book ancora fermi. Solo Over (gli Under non sono quotati sui book italiani).</div>
           </div>
 
           <div className="space-y-2">
