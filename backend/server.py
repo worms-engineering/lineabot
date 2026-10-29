@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
 from monitor import FAST_LOOP_SPORTS, ODDS_PROVIDERS, TennisMonitor
+from settlement import Settler, summarize
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -34,6 +35,9 @@ REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))  # 6 refresh / or
 # the games inside the 60-minute window, so poll every minute. 0 disables it
 # (F1/MLB then run on the main loop). Tunable via F1_REFRESH_SECONDS.
 F1_REFRESH_SECONDS = int(os.environ.get("F1_REFRESH_SECONDS", "60"))
+# Result settlement of sent alerts (won/lost), from PropLine scores/box scores
+# and Polymarket resolutions. 0 disables it.
+SETTLE_MINUTES = int(os.environ.get("SETTLE_MINUTES", "30"))
 # Whale monitor loop (keyless Polymarket Data API, one small request per poll
 # thanks to the server-side size filter). 0 disables it.
 WHALE_REFRESH_SECONDS = int(os.environ.get("WHALE_REFRESH_SECONDS", "30"))
@@ -95,6 +99,16 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
         logger.info("Whale monitor scheduled - every %d seconds", WHALE_REFRESH_SECONDS)
+    if SETTLE_MINUTES > 0:
+        scheduler.add_job(
+            _settle_alerts,
+            trigger=IntervalTrigger(minutes=SETTLE_MINUTES),
+            id="settle",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info("Alert settlement scheduled - every %d minutes", SETTLE_MINUTES)
     # Start once, after both jobs are registered: the fast F1/MLB loop must
     # still run when REFRESH_MINUTES=0 (on-demand main scan), which the old
     # start-inside-the-REFRESH_MINUTES-branch placement silently skipped.
@@ -333,6 +347,37 @@ async def list_alerts(limit: int = 50):
         {}, {"_id": 0, "telegram_response": 0, "message": 0}
     ).sort("created_at", -1).to_list(limit)
     return {"alerts": docs}
+
+
+async def _settle_alerts() -> dict:
+    try:
+        res = await Settler(db, monitor.clients["propline"]).run()
+        if res.get("settled"):
+            logger.info("settlement: %s", res)
+        return res
+    except Exception as e:
+        logger.exception("settlement failed")
+        return {"error": str(e)}
+
+
+@api.get("/results/summary")
+async def results_summary(days: int = 30):
+    """Won/lost totals, hit rate and flat-stake profit/ROI of the drop alerts
+    of the last `days` days, overall and per source (Pinnacle / props /
+    Polymarket)."""
+    days = max(1, min(days, 365))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = await db.alerts.find(
+        {"type": "drop", "created_at": {"$gte": since}},
+        {"_id": 0, "type": 1, "provider": 1, "sport": 1, "result": 1,
+         "result_profit": 1, "lines": 1}).to_list(10000)
+    return {"days": days, **summarize(rows)}
+
+
+@api.post("/settle")
+async def settle_now():
+    """Run the result settlement now (normally every SETTLE_MINUTES)."""
+    return await _settle_alerts()
 
 
 @api.post("/refresh")

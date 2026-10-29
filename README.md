@@ -157,6 +157,11 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
   linee del giocatore restano in pausa `PROPS_PLAYER_COOLDOWN` secondi (default 1800). La soglia si
   regola dalla dashboard (Settings → Drop threshold props); `PROPS_STEAM_BOOK_MOVE` è solo il valore
   iniziale (default 0.08 = 8%)
+- `SETTLE_MINUTES` — ogni quanti minuti il bot calcola l'**esito degli alert** inviati (default 30;
+  0 = disattivato): vinta/persa/rimborso dai risultati finali e dai box score di PropLine (`/scores`,
+  `/stats`, gratuiti) e dalla risoluzione dei mercati Polymarket (F1, outright). In dashboard: badge
+  sull'alert e riquadro "Esiti alert" (% vincenti, profitto e ROI a puntata fissa 1u alla quota
+  dell'alert). `POST /api/settle` lo esegue subito, `GET /api/results/summary?days=30` dà i totali
 - `PROPLINE_SOCCER_RESERVE` — sotto queste richieste PropLine rimaste nel giorno (default 150) i props
   di calcio (Serie A, Premier) si mettono in pausa fino al reset, per tenere NBA e miglior prezzo ITA
 - `NBA_PROPS_MIN_LIQUIDITY` / `NBA_PROPS_MAX_SPREAD` — filtro dei player props NBA su Polymarket:

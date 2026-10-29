@@ -55,6 +55,13 @@ export default function Dashboard() {
   const [settings, setSettings] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
   const [alerts, setAlerts] = useState([]);
+  const [results, setResults] = useState(null);
+  const loadResults = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/results/summary?days=30`);
+      setResults(r.data);
+    } catch { /* endpoint missing or offline: keep the last summary */ }
+  }, []);
   const [refreshing, setRefreshing] = useState(false);
   const [minDrop, setMinDrop] = useState(0);
   const [onlyDrops, setOnlyDrops] = useState(false);
@@ -113,12 +120,13 @@ export default function Dashboard() {
       setStatus(s.data);
       setSnapshot(snap.data);
       setAlerts(alertsResp.data.alerts || []);
+      loadResults();
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [loadResults]);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => { loadAll(); loadResults(); }, [loadAll, loadResults]);
   useEffect(() => {
     const t = setInterval(poll, 15000);
     const onVisible = () => { if (!document.hidden) loadAll(); };
@@ -631,6 +639,8 @@ export default function Dashboard() {
           </div>
           </div>
 
+          <ResultsSummary results={results} />
+
           <Collapsible title="Filters" icon={<Filter size={12} />} defaultOpen={isDesktop} testId="filters-panel">
             <div className="space-y-6 mt-3">
               <div className="flex items-center justify-between">
@@ -813,7 +823,7 @@ export default function Dashboard() {
                 );
               }
               return (
-              <div key={`${i}-${a.created_at}-${a.label}`} className={`py-1 border-b border-white/5 flex items-start gap-2 md:gap-3 ${underway ? "opacity-50" : ""}`} data-testid="alert-row">
+              <div key={`${i}-${a.created_at}-${a.label}`} className={`py-1 border-b border-white/5 flex items-start gap-2 md:gap-3 ${underway && !a.result ? "opacity-50" : ""}`} data-testid="alert-row">
                 <span className="text-zinc-600 shrink-0 whitespace-nowrap">{new Date(a.created_at).toLocaleTimeString()}</span>
                 {a.telegram_ok ? <CheckCircle2 size={12} className="text-[#32D74B] shrink-0 mt-0.5" /> : <XCircle size={12} className="text-[#FF3B30] shrink-0 mt-0.5" />}
                 <span className="text-zinc-300 min-w-0 break-words">
@@ -850,12 +860,96 @@ export default function Dashboard() {
                   {a.kalshi_price != null && (
                     <span className="ml-2 text-[#FF9F0A]">KS {a.kalshi_price.toFixed(2)}</span>
                   )}
+                  <ResultBadge a={a} started={underway} />
                 </span>
               </div>
               );
             })}
           </section>
         </main>
+      </div>
+    </div>
+  );
+}
+
+const RESULT_STYLE = {
+  won: { label: "✅ Vinta", color: "#32D74B" },
+  half_won: { label: "½ Vinta", color: "#32D74B" },
+  lost: { label: "❌ Persa", color: "#FF3B30" },
+  half_lost: { label: "½ Persa", color: "#FF3B30" },
+  push: { label: "↔ Rimborso", color: "#A1A1AA" },
+  void: { label: "↔ Annullata", color: "#A1A1AA" },
+  mixed: { label: "◐ Mista", color: "#FF9F0A" },
+  "n/d": { label: "n/d", color: "#52525B" },
+};
+
+// Outcome of an alerted bet (settled by the backend from final scores / box
+// scores / Polymarket resolutions). Pending: hourglass once the game started.
+function ResultBadge({ a, started }) {
+  const st = a.result ? RESULT_STYLE[a.result] || RESULT_STYLE["n/d"] : null;
+  if (!st) {
+    return started
+      ? <span className="ml-2 text-[10px] text-zinc-500" title="In attesa del risultato">⏳</span>
+      : null;
+  }
+  const pr = a.result_profit;
+  const tip = [a.result_detail, pr != null && a.result !== "n/d" ? `${pr >= 0 ? "+" : ""}${pr.toFixed(2)}u` : null]
+    .filter(Boolean).join(" · ");
+  return (
+    <span
+      className="ml-2 px-1 py-0.5 text-[9px] uppercase tracking-widest border align-middle whitespace-nowrap"
+      style={{ color: st.color, borderColor: `${st.color}66` }}
+      title={tip}
+      data-testid="result-badge"
+    >
+      {st.label}{a.result_detail && a.result !== "n/d" ? <span className="normal-case tracking-normal text-zinc-400"> · {a.result_detail}</span> : null}
+    </span>
+  );
+}
+
+// Sidebar box: how the alerts of the last 30 days turned out.
+function ResultsSummary({ results }) {
+  if (!results?.all) return null;
+  const all = results.all;
+  const pct = v => (v == null ? "—" : `${(v * 100).toFixed(0)}%`);
+  const units = v => `${v >= 0 ? "+" : ""}${(v ?? 0).toFixed(2)}u`;
+  const roiColor = v => (v == null ? "#A1A1AA" : v >= 0 ? "#32D74B" : "#FF3B30");
+  const SRC = [["pinnacle", "Pinnacle", "#007AFF"], ["props", "Props", "#BF5AF2"], ["polymarket", "Polymarket", "#FF2D55"]];
+  return (
+    <div data-testid="results-summary">
+      <SectionTitle icon={<CheckCircle2 size={12} />}>Esiti alert · {results.days} gg</SectionTitle>
+      <div className="border border-white/10 p-2.5 -mt-2">
+        <div className="flex items-baseline justify-between">
+          <span className="font-display text-2xl font-bold">
+            <span className="text-[#32D74B]">{all.won + all.half_won}V</span>
+            <span className="text-zinc-600"> · </span>
+            <span className="text-[#FF3B30]">{all.lost + all.half_lost}P</span>
+            {all.push + all.void > 0 && <span className="text-zinc-500 text-base"> · {all.push + all.void}R</span>}
+          </span>
+          <span className="font-mono text-sm text-white">{pct(all.hit_rate)}</span>
+        </div>
+        <div className="mt-1 flex justify-between text-[10px] uppercase tracking-widest text-zinc-500">
+          <span>Profitto <span className="font-mono normal-case" style={{ color: roiColor(all.roi) }}>{units(all.profit)}</span></span>
+          <span>ROI <span className="font-mono" style={{ color: roiColor(all.roi) }}>{pct(all.roi)}</span></span>
+        </div>
+        <div className="mt-2 space-y-1">
+          {SRC.map(([k, label, color]) => {
+            const b = results.by_source?.[k];
+            if (!b || (b.decided === 0 && b.pending === 0)) return null;
+            return (
+              <div key={k} className="flex items-center justify-between text-[10px] font-mono">
+                <span className="uppercase tracking-widest" style={{ color }}>{label}</span>
+                <span className="text-zinc-400">
+                  {b.won + b.half_won}V {b.lost + b.half_lost}P · {pct(b.hit_rate)} · <span style={{ color: roiColor(b.roi) }}>ROI {pct(b.roi)}</span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-2 text-[9px] text-zinc-600 leading-relaxed">
+          Puntata fissa 1u alla quota dell'alert. In attesa: {all.pending} · n/d: {all["n/d"]}
+          {all.mixed ? ` · miste: ${all.mixed}` : ""}.
+        </div>
       </div>
     </div>
   );
