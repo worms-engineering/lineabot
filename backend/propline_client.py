@@ -41,10 +41,19 @@ PROP_MARKETS = {
     "player_assists": "Assist",
     "player_threes": "Triple",
     "player_points_rebounds_assists": "Punti+Rimbalzi+Assist",
+    "player_double_double": "Doppia doppia",
 }
+# Yes/No markets on the NBA: FanDuel and DraftKings list only the YES side
+# (outcome name = the player), so they can't come from the source book's
+# two-way lines - they are taken from every book quoting them (2+ books).
+NBA_YES_MARKETS = {"player_double_double"}
 SOURCE_BOOK = os.environ.get("PROPLINE_SOURCE_BOOK", "fanduel").strip().lower()
-# Books whose price for the same prop is shown next to the source book's.
-CONTEXT_BOOKS = ["draftkings", "betmgm", "bovada", "fanatics", "betrivers", "pinnacle"]
+# Books whose price for the same prop is shown next to the source book's (and
+# that feed the steam rule). Novig is a leader book; Hard Rock adds depth on
+# the double-double, where Pinnacle and Bovada post nothing (Unibet is left
+# out: same Kambi feed as BetRivers, it would count the same price twice).
+CONTEXT_BOOKS = ["draftkings", "novig", "betmgm", "bovada", "fanatics", "betrivers",
+                 "pinnacle", "hardrock"]
 BOOK_LABELS = {
     "fanduel": "FanDuel", "draftkings": "DraftKings", "betmgm": "BetMGM",
     "bovada": "Bovada", "fanatics": "Fanatics", "betrivers": "BetRivers",
@@ -79,6 +88,7 @@ PROP_SPORTS = {
     "props_nba": {"label": "NBA", "markets": PROP_MARKETS,
                   "books": [SOURCE_BOOK] + [b for b in CONTEXT_BOOKS if b != SOURCE_BOOK],
                   "universe": "source", "rungs": False, "band": PRICE_BAND,
+                  "yes_markets": NBA_YES_MARKETS,
                   "min_interval": 0},
     "props_seriea": {"label": "Serie A", "markets": SOCCER_PROP_MARKETS,
                      "books": SOCCER_PROP_BOOKS, "universe": "union", "rungs": True,
@@ -253,7 +263,8 @@ _RUNG = re.compile(r"^\s*(\d+)\s*\+")
 _PAREN = re.compile(r"\s*\([^)]*\)\s*$")
 
 
-def _book_props(bookmaker: dict, markets: dict, rungs: bool) -> dict[tuple, tuple]:
+def _book_props(bookmaker: dict, markets: dict, rungs: bool,
+                yes_markets=frozenset()) -> dict[tuple, tuple]:
     """{(market, player_key, point, side): (decimal price, display name)} for
     one book's player props, normalized so the same bet lines up across books:
     - two-way Over/Under (or Yes/No) with a line -> (point, over|under);
@@ -262,13 +273,14 @@ def _book_props(bookmaker: dict, markets: dict, rungs: bool) -> dict[tuple, tupl
     - YES-only player list (anytime scorer, "to have a shot on target") ->
       Over 0.5, i.e. 1+.
     `rungs=False` keeps only the two-way lines (NBA, where every book posts
-    them). The player is keyed by PropLine's cross-book `player_id` when it is
+    them), except for the `yes_markets` (double-double). The player is keyed by PropLine's cross-book `player_id` when it is
     known, else by the normalized name (Bovada's "(BOL)" team tag stripped)."""
     out: dict[tuple, tuple] = {}
     for mk in bookmaker.get("markets") or []:
         key = mk.get("key")
         if key not in markets or mk.get("period"):
             continue
+        ladder = rungs or key in yes_markets
         for o in mk.get("outcomes") or []:
             name = str(o.get("name") or "").strip()
             n = name.lower()
@@ -277,7 +289,7 @@ def _book_props(bookmaker: dict, markets: dict, rungs: bool) -> dict[tuple, tupl
             if point is not None and n in ("over", "under", "yes", "no"):
                 side = "over" if n in ("over", "yes") else "under"
                 pt = float(point)
-            elif not rungs:
+            elif not ladder:
                 continue
             elif _RUNG.match(name):
                 side, pt = "over", int(_RUNG.match(name).group(1)) - 0.5
@@ -298,6 +310,8 @@ def _book_props(bookmaker: dict, markets: dict, rungs: bool) -> dict[tuple, tupl
 def _side_label(mkey: str, point: float, side: str) -> str:
     if mkey == "anytime_goal_scorer" and point == 0.5:
         return "Segna" if side == "over" else "Non segna"
+    if mkey == "player_double_double" and point == 0.5:
+        return "Sì" if side == "over" else "No"
     return f"{'Over' if side == 'over' else 'Under'} {point:g}"
 
 
@@ -323,12 +337,20 @@ def parse_props_events(events: list, start_epoch: int, end_epoch: int,
         st = _iso_epoch(ev.get("commence_time"))
         if st is None or not (start_epoch < st <= end_epoch):
             continue
-        books = {b.get("key"): _book_props(b, markets, conf["rungs"])
+        yes_markets = conf.get("yes_markets") or frozenset()
+        books = {b.get("key"): _book_props(b, markets, conf["rungs"], yes_markets)
                  for b in ev.get("bookmakers") or []}
         src = books.get(source_book) or {}
         if conf["universe"] == "source":
-            keys = [k for k in src
-                    if (k[0], k[1], k[2], "under" if k[3] == "over" else "over") in src]
+            keys = [k for k in src if k[0] not in yes_markets
+                    and (k[0], k[1], k[2], "under" if k[3] == "over" else "over") in src]
+            if yes_markets:
+                count: dict[tuple, int] = {}
+                for props in books.values():
+                    for k in props:
+                        if k[0] in yes_markets:
+                            count[k] = count.get(k, 0) + 1
+                keys += [k for k, c in count.items() if c >= 2]
         else:
             count: dict[tuple, int] = {}
             for props in books.values():

@@ -45,7 +45,8 @@ PROP_STATS = [
     ("Tiri in porta", "shots_on_target"),
     ("Punti", "points"), ("Rimbalzi", "rebounds"), ("Assist", "assists"),
     ("Triple", "threes"), ("Tiri", "shots"),
-    ("Marcatore", "goals"),  # goalscorer alerts sent before that market was dropped
+    ("Marcatore", "goals"),
+    ("Doppia doppia", "double_double"),  # goalscorer alerts sent before that market was dropped
 ]
 # Polymarket NBA props use the stat names of their own markets.
 _PM_PROP_STATS = {"points": "points", "rebounds": "rebounds", "assists": "assists"}
@@ -127,7 +128,8 @@ def _parse_total_label(label: str) -> tuple[str, float] | None:
 def _prop_from_alert(market_name: str, label: str, sport: str) -> tuple | None:
     """(player, stat_type, side, point) from a props alert line."""
     lab = str(label).strip().lower()
-    tot = ({"segna": ("over", 0.5), "non segna": ("under", 0.5)}.get(lab)
+    tot = ({"segna": ("over", 0.5), "non segna": ("under", 0.5),
+            "sì": ("over", 0.5), "si": ("over", 0.5), "no": ("under", 0.5)}.get(lab)
            or _parse_total_label(label))
     if not tot:
         return None
@@ -287,6 +289,8 @@ class Settler:
         if status not in _FINAL:
             return None
         stats = await self._stats_for(key, ev.get("id"))
+        if stat == "double_double":
+            return self._grade_double_double(stats, player, side)
         rows = [r for r in stats.get("stats") or [] if r.get("stat_type") == stat]
         if not rows:
             return None if not stats else ("n/d", "statistica non disponibile")
@@ -299,6 +303,31 @@ class Settler:
             return ("void", f"{player} non a referto")
         label_it = {"goals": "gol"}.get(stat) or next((p for p, s in PROP_STATS if s == stat), stat).lower()
         return (grade_total(val, side, point), f"{val:g} {label_it}")
+
+    @staticmethod
+    def _player_rows(rows: list, player: str) -> list:
+        """The player's box-score rows: exact name first; else surname +
+        initial, only if that matches a single player."""
+        exact = [r for r in rows if plc._norm(r.get("player_name")) == plc._norm(player)]
+        if exact:
+            return exact
+        names = {r.get("player_name") for r in rows if same_player(r.get("player_name"), player)}
+        return [r for r in rows if r.get("player_name") in names] if len(names) == 1 else []
+
+    def _grade_double_double(self, stats: dict, player: str, side: str):
+        """Double-double: 10+ in at least two of points, rebounds, assists,
+        steals, blocks."""
+        cats = ("points", "rebounds", "assists", "steals", "blocks")
+        rows = [r for r in stats.get("stats") or [] if r.get("stat_type") in cats]
+        if not rows:
+            return None if not stats else ("n/d", "statistica non disponibile")
+        mine = self._player_rows(rows, player)
+        if not mine:
+            return ("void", f"{player} non a referto")
+        val = {r["stat_type"]: float(r.get("stat_value") or 0) for r in mine}
+        n = sum(1 for c in cats if val.get(c, 0) >= 10)
+        detail = f"{val.get('points', 0):g} pt · {val.get('rebounds', 0):g} rb · {val.get('assists', 0):g} as"
+        return (grade_total(1.0 if n >= 2 else 0.0, side, 0.5), detail)
 
     async def _gamma_closed(self, tag: str) -> list:
         if tag not in self._gamma_events:

@@ -143,7 +143,9 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
 - `WHALE_REFRESH_SECONDS` — secondi tra i poll del whale monitor Polymarket (default 30, gratuito)
 - `PROPLINE_API_KEY` — key PropLine (prop-line.com, free 1.000 richieste/giorno) per i player props NBA
   dei bookmaker; impostabile anche dalla dashboard (Settings → PropLine key). `PROPLINE_SOURCE_BOOK`
-  sceglie il book tracciato (default `fanduel`); gli altri book compaiono nell'alert per confronto
+  sceglie il book tracciato (default `fanduel`); gli altri book compaiono nell'alert per confronto.
+  Mercati NBA: punti, rimbalzi, assist, triple, P+R+A e **doppia doppia** (Sì/No: FanDuel e DraftKings
+  quotano solo il Sì, quindi la linea entra se la quotano almeno 2 book; esito calcolato dal box score)
   Con la stessa key: **player props Serie A e Premier League** (tiri in porta, tiri; book USA; solo Over, niente mercati marcatore; poll ogni
   `PROPLINE_SOCCER_INTERVAL` secondi, default 60) con la stessa regola multi-book.
   La stessa key fornisce anche il **miglior prezzo ITA** negli alert di calcio e tennis (Snai, Eurobet,
