@@ -58,13 +58,12 @@ WHALE_AGG_SECONDS = 15 * 60
 # Multi-book steam rule for sportsbook props (PropLine): no single book is
 # measurably sharper than the market on props (PropLine accuracy report, NBA:
 # every book "in line" with the consensus), so a lone book's move is not a
-# signal. A prop line alerts only when at least PROPS_STEAM_MIN_BOOKS
-# independent books have each shortened it by >= the props drop threshold
-# since they started being tracked AND the consensus (median across every book
-# quoting the line) has moved by the same threshold - two books out of seven
-# moving while the rest hold is not market steam. It re-alerts only if MORE
-# books join. The threshold is the dashboard "props" slider
-# (props_drop_threshold); PROPS_STEAM_BOOK_MOVE only seeds its default.
+# signal. A prop line alerts when at least PROPS_STEAM_MIN_BOOKS leader books
+# (below) have each shortened it by >= the props drop threshold since they
+# started being tracked, or when one leader has and is clearly ahead of the
+# rest of the market (first mover, below). The threshold is the dashboard
+# "props" slider (props_drop_threshold); PROPS_STEAM_BOOK_MOVE only seeds its
+# default.
 PROPS_STEAM_MIN_BOOKS = int(os.environ.get("PROPS_STEAM_MIN_BOOKS", "2"))
 # "Leader" books for props: the ones "in line" with the market in PropLine's
 # accuracy report (NBA, 120 d: Novig +5.9, FanDuel -0.3, DraftKings -0.4,
@@ -78,6 +77,23 @@ PROPS_STEAM_MIN_BOOKS = int(os.environ.get("PROPS_STEAM_MIN_BOOKS", "2"))
 PROPS_LEADER_BOOKS = set(
     b.strip() for b in os.environ.get(
         "PROPS_LEADER_BOOKS", "pinnacle,novig,fanduel,draftkings,bovada").split(",") if b.strip())
+# First-mover trigger: waiting for a SECOND leader cost ~9 min on the NBA
+# (median gap between the 1st and 2nd leader repricing a line, PropLine
+# last_change_at), by which time the soft books had often followed too. So a
+# single leader also alerts once it has moved by the props threshold AND its
+# new price is at least PROPS_FIRST_MOVER_GAP x threshold below the median of
+# the other books quoting the line (at least PROPS_FIRST_MOVER_MIN_OTHERS of
+# them), having been within the same margin of the others' opening median
+# before the move: it is ahead of the market, not a stale outlier correcting.
+# Bovada is left out of this single-book path: on a recorded NBA slate it
+# repriced a batch of stale lines (2.15 -> 1.80 with the market at ~1.90) and
+# no other book followed - 9 of 9 lone-Bovada triggers were noise. It still
+# counts toward the 2-leader rule (the Premier League needs it).
+PROPS_FIRST_MOVER_BOOKS = set(
+    b.strip() for b in os.environ.get(
+        "PROPS_FIRST_MOVER_BOOKS", "pinnacle,novig,fanduel,draftkings").split(",") if b.strip())
+PROPS_FIRST_MOVER_GAP = float(os.environ.get("PROPS_FIRST_MOVER_GAP", "0.5"))
+PROPS_FIRST_MOVER_MIN_OTHERS = int(os.environ.get("PROPS_FIRST_MOVER_MIN_OTHERS", "2"))
 # Player-prop sports (sportsbook via PropLine and Polymarket). On these only the
 # OVER side can alert: Italian books don't price player-prop Unders, so an
 # Under move isn't actionable. Unders are still tracked - they show up as the
@@ -1002,12 +1018,29 @@ class TennisMonitor:
                     c_open = statistics.median([b_open[bk] for bk in settled]) if settled else 0.0
                     c_now = statistics.median([book_prices[bk] for bk in settled]) if settled else 0.0
                     c_move = (c_open - c_now) / c_open if c_open and c_now < c_open else 0.0
+                    # First mover: ONE leader that moved and now sits clearly
+                    # below the rest of the market is steam starting - fire on
+                    # it instead of waiting for a second leader. A leader that
+                    # only falls back in line with the others is not a signal.
+                    first_mover = False
+                    gap = pth * PROPS_FIRST_MOVER_GAP
+                    for lm in leader_moves:
+                        if lm["key"] not in PROPS_FIRST_MOVER_BOOKS:
+                            continue
+                        others = [bk for bk in settled if bk != lm["key"]]
+                        if (len(others) >= PROPS_FIRST_MOVER_MIN_OTHERS
+                                # it was in line with the market before moving...
+                                and lm["from"] <= statistics.median([b_open[bk] for bk in others]) * (1 + gap)
+                                # ...and is now clearly below it
+                                and lm["to"] <= statistics.median([book_prices[bk] for bk in others]) * (1 - gap)):
+                            first_mover = True
+                            break
                     last_alert = (prev or {}).get("steam_alert_price")
                     player_key = str(sel.get("market_key") or "").split(":", 2)[-1]
                     cd_key = (sport, match_id, player_key)
                     cd_at = self._prop_player_alerted.get(cd_key)
                     if (prev and observations >= 3 and fresh and not suspect_live
-                            and len(leader_moves) >= PROPS_STEAM_MIN_BOOKS
+                            and (len(leader_moves) >= PROPS_STEAM_MIN_BOOKS or first_mover)
                             # A: an already-alerted line needs a new low
                             and (not last_alert or l_now <= last_alert * (1 - pth))
                             # C: other lines of a player alerted recently wait
@@ -1524,7 +1557,10 @@ class TennisMonitor:
                 lines.append("⏳ Ancora fermi: " + " · ".join(
                     f"{esc(f['book'])} <b>{f['price']:.2f}</b>" for f in flat))
             cons = sel.get("steam_consensus")
-            if cons and cons[0]:
+            if cons and cons[0] and cons[2] < 0.005:
+                # first-mover alert: the rest of the market hasn't moved yet
+                lines.append(f"📊 Consenso tutti i book: {cons[1]:.2f} (ancora fermo)")
+            elif cons and cons[0]:
                 lines.append(f"📊 Consenso tutti i book: {cons[0]:.2f} → {cons[1]:.2f} "
                              f"(-{cons[2] * 100:.1f}%)")
         # Same prop at the other books (PropLine selections carry them); a

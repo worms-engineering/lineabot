@@ -73,8 +73,8 @@ SOCCER_PROP_BOOKS = ["fanduel", "draftkings", "bovada", "fanatics", "thescorebet
 # Per-sport settings. `universe`: which lines become selections (see
 # parse_props_events); `rungs`: also read N+ ladders / YES-only lists;
 # `min_interval`: seconds between two odds requests (the fast loop runs every
-# 60s; Serie A props move slowly and each league costs its own request, so it
-# polls every 2 minutes to stay inside the free daily quota).
+# 60s). Props are only polled in the hour before kick-off, so even one request
+# per league per minute costs ~55 per match slot - well inside the free quota.
 PROP_SPORTS = {
     "props_nba": {"label": "NBA", "markets": PROP_MARKETS,
                   "books": [SOURCE_BOOK] + [b for b in CONTEXT_BOOKS if b != SOURCE_BOOK],
@@ -85,7 +85,7 @@ PROP_SPORTS = {
                      # scorer prices run longer than NBA lines; beyond ~6.0 one
                      # ladder tick is already a big % move
                      "band": (1.25, 6.0),
-                     "min_interval": int(os.environ.get("PROPLINE_SOCCER_INTERVAL", "120"))},
+                     "min_interval": int(os.environ.get("PROPLINE_SOCCER_INTERVAL", "60"))},
 }
 # Premier League: same books / markets / cadence as Serie A.
 PROP_SPORTS["props_epl"] = {**PROP_SPORTS["props_seriea"], "label": "Premier League"}
