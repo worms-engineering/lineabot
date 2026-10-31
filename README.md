@@ -20,11 +20,14 @@ Ognuno usa la sua key (`THE_ODDS_API_KEY` / `ODDSPAPI_KEY`); imposta quella dei 
   EuroBasket** (whitelist in `BASKETBALL_WHITELIST`, modificabile);
 - **calcio** — provider **switchabile indipendentemente dal tennis** (pulsante dedicato in
   dashboard, o via `PUT /api/settings {"football_provider": ...}`), limitato ai **top-5
-  campionati europei + Champions/Europa/Conference League**:
+  campionati europei + Serie B e Serie C italiane + Champions/Europa/Conference League**
+  (più Eredivisie, Liga Portugal, Brasile, Argentina, Liga MX, Nations League e Coppa Italia;
+  niente amichevoli, coppe AFC/CAF, femminili e giovanili):
   - **OddsPapi** — calendario completo, include anche i **turni preliminari** delle coppe
     UEFA (whitelist `FOOTBALL_WHITELIST_ODDSPAPI` in `monitor.py`: match esatto sul nome
-    torneo per i campionati domestici — così non prende le serie B/2. Bundesliga — e match
-    a sottostringa per le coppe UEFA, per includere anche le varianti "Qualification");
+    torneo per i campionati domestici — così non prende la 2. Bundesliga — match per
+    prefisso per Serie B e i gironi di Serie C, e a sottostringa per le coppe UEFA, per
+    includere anche le varianti "Qualification");
   - **The Odds API** — solo fase a gironi/eliminazione in poi in genere, dati puliti
     (whitelist `FOOTBALL_LEAGUE_KEYS` in `theoddsapi_client.py`).
 

@@ -120,6 +120,7 @@ SOCCER_SPORT_KEYS = [
     ("laliga", "soccer_la_liga"),
     ("la liga", "soccer_la_liga"),
     ("serie a", "soccer_serie_a"),
+    ("serie b", "soccer_italy_serie_b"),
     ("bundesliga", "soccer_bundesliga"),
     ("ligue 1", "soccer_ligue_1"),
     ("eredivisie", "soccer_eredivisie"),

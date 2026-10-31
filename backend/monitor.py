@@ -177,6 +177,11 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     ("spain", "la liga"),
     ("italy", "serie a"),
     ("italy", "coppa italia"),  # exact match: excludes "Coppa Italia Serie C"
+    # Italian second and third tier: "Serie B" (+ its playoffs) and every
+    # "Serie C" group / playoff round. Prefix match, so not "Coppa Italia
+    # Serie C"; women's / Primavera editions never match (_NOT_SENIOR).
+    ("italy", "serie b", "prefix"),
+    ("italy", "serie c", "prefix"),
     ("germany", "bundesliga"),
     ("france", "ligue 1"),
     ("netherlands", "eredivisie"),  # exact match: excludes "Eredivisie SRL" (virtual)
@@ -194,14 +199,13 @@ FOOTBALL_WHITELIST_ODDSPAPI = [
     # National teams: UEFA Nations League (id 23755). Exact match excludes
     # "UEFA Nations League, Women", the "... SRL" simulated feed and CONCACAF's.
     ("international", "uefa nations league"),
-    (None, "champions league", "contains"),
-    (None, "europa league", "contains"),
-    (None, "conference league", "contains"),
-    # Amichevoli: OddsPapi bundles ALL club friendlies worldwide under this one
-    # tournament name (from top-club preseason tours down to reserve/lower-league
-    # sides), no way to narrow it further by name - if it's too much noise, raise
-    # football_drop_threshold rather than trying to filter here.
-    (None, "friendly", "contains"),
+    # UEFA club cups incl. qualifying rounds. "uefa" keeps out the AFC / CAF /
+    # CONCACAF Champions Leagues; women's editions never match (_NOT_SENIOR).
+    (None, "uefa champions league", "contains"),
+    (None, "uefa europa league", "contains"),
+    (None, "uefa conference league", "contains"),
+    # Friendlies (club, U19/U20, national teams) were dropped on 2026-10-31 at
+    # the user's request: minor sides, books barely price them.
 ]
 
 # Football on The Odds API uses a fixed sport-key whitelist instead

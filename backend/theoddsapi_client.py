@@ -37,6 +37,7 @@ FOOTBALL_LEAGUE_KEYS = [
     "soccer_epl",                          # Premier League
     "soccer_spain_la_liga",                # La Liga
     "soccer_italy_serie_a",                # Serie A
+    "soccer_italy_serie_b",                # Serie B
     "soccer_germany_bundesliga",           # Bundesliga
     "soccer_france_ligue_one",             # Ligue 1
     "soccer_uefa_champs_league",           # Champions League
@@ -81,6 +82,7 @@ LEAGUE_SPORT_KEYS = [
     ("laliga", "soccer_spain_la_liga"),
     ("la liga", "soccer_spain_la_liga"),
     ("serie a", "soccer_italy_serie_a"),
+    ("serie b", "soccer_italy_serie_b"),
     ("bundesliga", "soccer_germany_bundesliga"),
     ("ligue 1", "soccer_france_ligue_one"),
     ("champions league", "soccer_uefa_champs_league"),

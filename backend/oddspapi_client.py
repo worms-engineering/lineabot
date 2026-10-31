@@ -103,6 +103,9 @@ def _is_real_event(fx: dict) -> bool:
     return not ("simulated" in text or "virtual" in text or "srl " in text)
 
 
+_NOT_SENIOR = re.compile(r"\b(women|u\d\d|youth|primavera|reserves?|amateur)\b")
+
+
 def _matches_whitelist(fx: dict, patterns) -> bool:
     """True if the fixture matches the whitelist. Patterns can be:
     - a plain lowercase substring, matched against tournamentName only
@@ -113,7 +116,13 @@ def _matches_whitelist(fx: dict, patterns) -> bool:
       "2. Bundesliga" the way a substring would;
     - a (category_or_None, name_substring, "contains") 3-tuple: substring
       match instead of exact — used for UEFA cups, so it still catches
-      qualifying-round variants like "UEFA Europa League Qualification".
+      qualifying-round variants like "UEFA Europa League Qualification";
+    - a (category_or_None, name_prefix, "prefix") 3-tuple: the name starts
+      with it — Italy's "Serie C" groups/playoffs, but not "Coppa Italia
+      Serie C".
+    The loose 3-tuple modes never match women's / youth / reserve editions
+    ("UEFA Champions League Women", "Serie B Women", U19...): name those with
+    an exact 2-tuple if wanted (volleyball does).
     A None category means "any" (international/UEFA competitions).
     """
     if not patterns:
@@ -123,8 +132,9 @@ def _matches_whitelist(fx: dict, patterns) -> bool:
     for p in patterns:
         if isinstance(p, tuple):
             if len(p) == 3:
-                cat_pat, name_pat, _mode = p
-                name_ok = name_pat in name
+                cat_pat, name_pat, mode = p
+                name_ok = (name.startswith(name_pat) if mode == "prefix" else name_pat in name)
+                name_ok = name_ok and not _NOT_SENIOR.search(name)
             else:
                 cat_pat, name_pat = p
                 name_ok = name == name_pat
