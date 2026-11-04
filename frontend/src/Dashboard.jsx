@@ -58,7 +58,7 @@ export default function Dashboard() {
   const [results, setResults] = useState(null);
   const loadResults = useCallback(async () => {
     try {
-      const r = await axios.get(`${API}/results/summary?days=30`);
+      const r = await axios.get(`${API}/results/summary`);
       setResults(r.data);
     } catch { /* endpoint missing or offline: keep the last summary */ }
   }, []);
@@ -925,7 +925,7 @@ function ResultsSummary({ results }) {
   const SRC = [["pinnacle", "Pinnacle", "#007AFF"], ["props", "Props", "#BF5AF2"], ["polymarket", "Polymarket", "#FF2D55"]];
   return (
     <div data-testid="results-summary">
-      <SectionTitle icon={<CheckCircle2 size={12} />}>Esiti alert · {results.days} gg</SectionTitle>
+      <SectionTitle icon={<CheckCircle2 size={12} />}>Esiti alert · dal {new Date(results.since).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" })}</SectionTitle>
       <div className="border border-white/10 p-2.5 -mt-2">
         <div className="flex items-baseline justify-between">
           <span className="font-display text-2xl font-bold">
@@ -955,7 +955,7 @@ function ResultsSummary({ results }) {
           })}
         </div>
         <div className="mt-2 text-[9px] text-zinc-600 leading-relaxed">
-          Puntata fissa 1u alla quota dell'alert. In attesa: {all.pending} · n/d: {all["n/d"]}
+          Solo alert con le regole attuali. Puntata fissa 1u alla quota dell'alert. In attesa: {all.pending} · n/d: {all["n/d"]}
           {all.mixed ? ` · miste: ${all.mixed}` : ""}.
         </div>
       </div>

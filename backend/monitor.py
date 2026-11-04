@@ -92,6 +92,11 @@ PROPS_LEADER_BOOKS = set(
 PROPS_FIRST_MOVER_BOOKS = set(
     b.strip() for b in os.environ.get(
         "PROPS_FIRST_MOVER_BOOKS", "pinnacle,novig,fanduel,draftkings").split(",") if b.strip())
+# Markets that always need PROPS_STEAM_MIN_BOOKS leaders. The double-double
+# sells at 3.00-5.00, where the % threshold is a far smaller probability move
+# (3.70 -> 3.40 is -8% but +2.4 points; 1.91 -> 1.75 is +5): the first 10
+# settled alerts, all from lone-book moves, all lost.
+PROPS_TWO_LEADER_MARKETS = {"player_double_double"}
 PROPS_FIRST_MOVER_GAP = float(os.environ.get("PROPS_FIRST_MOVER_GAP", "0.5"))
 PROPS_FIRST_MOVER_MIN_OTHERS = int(os.environ.get("PROPS_FIRST_MOVER_MIN_OTHERS", "2"))
 # Player-prop sports (sportsbook via PropLine and Polymarket). On these only the
@@ -1065,8 +1070,10 @@ class TennisMonitor:
                     # only falls back in line with the others is not a signal.
                     first_mover = False
                     gap = pth * PROPS_FIRST_MOVER_GAP
+                    prop_market = (str(sel.get("market_key") or "").split(":") + [""])[1]
                     for lm in leader_moves:
-                        if lm["key"] not in PROPS_FIRST_MOVER_BOOKS:
+                        if (lm["key"] not in PROPS_FIRST_MOVER_BOOKS
+                                or prop_market in PROPS_TWO_LEADER_MARKETS):
                             continue
                         others = [bk for bk in settled if bk != lm["key"]]
                         if (len(others) >= PROPS_FIRST_MOVER_MIN_OTHERS

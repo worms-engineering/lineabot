@@ -37,6 +37,11 @@ GIVE_UP_SECONDS = 4 * 86400          # nothing graded it in 4 days -> "n/d"
 OUTRIGHT_GIVE_UP_SECONDS = 400 * 86400
 LOOKBACK_DAYS = 30                   # PropLine /scores keeps 30 days
 PROPLINE_MIN_REMAINING = 100         # never eat the last requests of the day
+# The dashboard's results box counts only alerts sent under the current rules:
+# from the first-mover rule on, and double-doubles from when they began to need
+# two leaders. Older alerts keep their result on the alert itself.
+RESULTS_SINCE = "2026-10-30T00:40:00+00:00"
+DOUBLE_DOUBLE_SINCE = "2026-11-05T00:15:00+00:00"
 
 # Italian props labels (market_name prefix) -> PropLine stat_type. Longest
 # prefixes first so "Tiri in porta" isn't read as "Tiri".
@@ -482,6 +487,14 @@ class Settler:
                 await self.db.alerts.update_one({"_id": a["_id"]}, {"$set": update})
                 done += 1
         return {"pending": len(pending), "settled": done}
+
+
+def under_current_rules(alert: dict) -> bool:
+    """False for an alert sent under a rule that has since been replaced."""
+    if alert.get("created_at", "") >= DOUBLE_DOUBLE_SINCE:
+        return True
+    names = [alert.get("market_name")] + [l.get("market_name") for l in alert.get("lines") or []]
+    return not any(str(n or "").startswith("Doppia doppia") for n in names)
 
 
 def summarize(alerts: list[dict]) -> dict:

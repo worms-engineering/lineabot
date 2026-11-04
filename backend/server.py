@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
 from monitor import FAST_LOOP_SPORTS, ODDS_PROVIDERS, TennisMonitor
-from settlement import Settler, summarize
+from settlement import RESULTS_SINCE, Settler, summarize, under_current_rules
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -375,17 +375,22 @@ async def _settle_alerts() -> dict:
 
 
 @api.get("/results/summary")
-async def results_summary(days: int = 30):
-    """Won/lost totals, hit rate and flat-stake profit/ROI of the drop alerts
-    of the last `days` days, overall and per source (Pinnacle / props /
-    Polymarket)."""
-    days = max(1, min(days, 365))
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+async def results_summary(days: int | None = None):
+    """Won/lost totals, hit rate and flat-stake profit/ROI of the drop alerts,
+    overall and per source (Pinnacle / props / Polymarket): those sent under
+    the current rules, or every alert of the last `days` days if given."""
+    if days is None:
+        since = RESULTS_SINCE
+    else:
+        days = max(1, min(days, 365))
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     rows = await db.alerts.find(
         {"type": "drop", "created_at": {"$gte": since}},
-        {"_id": 0, "type": 1, "provider": 1, "sport": 1, "result": 1,
-         "result_profit": 1, "lines": 1}).to_list(10000)
-    return {"days": days, **summarize(rows)}
+        {"_id": 0, "type": 1, "provider": 1, "sport": 1, "result": 1, "created_at": 1,
+         "result_profit": 1, "market_name": 1, "lines": 1}).to_list(10000)
+    if days is None:
+        rows = [r for r in rows if under_current_rules(r)]
+    return {"days": days, "since": since, **summarize(rows)}
 
 
 @api.post("/settle")

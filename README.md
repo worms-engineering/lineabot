@@ -163,7 +163,8 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
   basta anche un solo leader (`PROPS_FIRST_MOVER_BOOKS`, default `pinnacle,novig,fanduel,draftkings`:
   Bovada da solo non basta, ricorregge spesso quote vecchie) se prima del calo era in linea con la
   mediana degli altri book e dopo il calo è sotto di almeno metà soglia (è davanti al mercato, non
-  sta solo rientrando in linea): si evita di aspettare il secondo leader.
+  sta solo rientrando in linea): si evita di aspettare il secondo leader. La doppia doppia ne è
+  esclusa e richiede sempre 2 leader (`PROPS_TWO_LEADER_MARKETS`).
   Anti-spam: una linea già segnalata riparte solo su un nuovo minimo di almeno un'altra soglia; più
   linee dello stesso giocatore nello stesso scan arrivano in un solo messaggio; dopo un alert, le altre
   linee del giocatore restano in pausa `PROPS_PLAYER_COOLDOWN` secondi (default 1800). La soglia si
