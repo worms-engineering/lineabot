@@ -302,6 +302,20 @@ def _parse_iso_epoch(value: Any) -> int | None:
         return None
 
 
+def _steam_fields(sel: dict) -> dict:
+    """Which books moved and which held on a props alert, stored on the alert
+    so the signal can be graded book by book. Empty for non-steam alerts."""
+    moves = sel.get("steam")
+    if not moves:
+        return {}
+    return {
+        "steam_moves": [{"book": m["book"], "from": round(m["from"], 3), "to": round(m["to"], 3),
+                         "move": round(m["move"], 4), "leader": m["leader"]} for m in moves],
+        "steam_flat": [{"book": f["book"], "price": round(f["price"], 3)}
+                       for f in sel.get("steam_flat") or []],
+    }
+
+
 class TennisMonitor:
     def __init__(self, db, drop_threshold: float = DEFAULT_DROP_THRESHOLD):
         self.db = db
@@ -1266,7 +1280,7 @@ class TennisMonitor:
                            "market_key": a[1].get("market_key"), "outcome": a[1].get("outcome"),
                            "point": a[1].get("point"),
                            "prev_price": round(a[4], 3), "price": round(a[5], 3),
-                           "drop": round(a[6], 4)} for a in items],
+                           "drop": round(a[6], 4), **_steam_fields(a[1])} for a in items],
                 "telegram_ok": bool(tg.get("ok")),
                 "telegram_response": tg,
                 "message": text,
@@ -1322,6 +1336,7 @@ class TennisMonitor:
                 "betfair_price": None,
                 "polymarket_price": None,
                 "kalshi_price": None,
+                **_steam_fields(sel),
                 "telegram_ok": bool(tg_result.get("ok")),
                 "telegram_response": tg_result,
                 "message": text,

@@ -348,12 +348,17 @@ async def get_snapshot():
 
 
 @api.get("/alerts")
-async def list_alerts(limit: int = 50):
-    # The Telegram HTML text and raw response aren't rendered by the dashboard:
-    # leave them out of the payload it polls every few seconds.
+async def list_alerts(limit: int = 50, detail: bool = False):
+    # The Telegram HTML text, raw response and per-book moves aren't rendered by
+    # the dashboard: leave them out of the payload it polls every few seconds.
+    # `detail=true` adds the text and the moves, for analysing alerts by book.
     limit = max(1, min(limit, 500))
+    projection = {"_id": 0, "telegram_response": 0}
+    if not detail:
+        projection.update({"message": 0, "steam_moves": 0, "steam_flat": 0,
+                           "lines.steam_moves": 0, "lines.steam_flat": 0})
     docs = await db.alerts.find(
-        {}, {"_id": 0, "telegram_response": 0, "message": 0}
+        {}, projection
     ).sort("created_at", -1).to_list(limit)
     return {"alerts": docs}
 
