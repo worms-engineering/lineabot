@@ -146,6 +146,8 @@ class SettingsIn(BaseModel):
     props_nba_enabled: bool | None = None
     props_seriea_enabled: bool | None = None
     props_epl_enabled: bool | None = None
+    props_ucl_enabled: bool | None = None
+    props_uel_enabled: bool | None = None
     outright_enabled: bool | None = None
     whale_enabled: bool | None = None
     whale_min_usd: float | None = Field(default=None, ge=0.0)
@@ -174,6 +176,8 @@ class SettingsOut(BaseModel):
     props_nba_enabled: bool
     props_seriea_enabled: bool
     props_epl_enabled: bool
+    props_ucl_enabled: bool
+    props_uel_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     whale_min_usd: float
@@ -213,6 +217,8 @@ class StatusOut(BaseModel):
     props_nba_enabled: bool
     props_seriea_enabled: bool
     props_epl_enabled: bool
+    props_ucl_enabled: bool
+    props_uel_enabled: bool
     outright_enabled: bool
     whale_enabled: bool
     provider: str
@@ -253,7 +259,8 @@ def _quota_warning() -> str | None:
     if monitor.volley_enabled:
         in_use.add("oddspapi")  # volleyball always runs on OddsPapi
     if ((monitor.props_nba_enabled or monitor.props_seriea_enabled
-         or monitor.props_epl_enabled)
+         or monitor.props_epl_enabled or monitor.props_ucl_enabled
+         or monitor.props_uel_enabled)
             and monitor.clients["propline"].api_key):
         in_use.add("propline")  # NBA book props
     msgs = []
@@ -305,6 +312,8 @@ async def get_status():
         props_nba_enabled=monitor.props_nba_enabled,
         props_seriea_enabled=monitor.props_seriea_enabled,
         props_epl_enabled=monitor.props_epl_enabled,
+        props_ucl_enabled=monitor.props_ucl_enabled,
+        props_uel_enabled=monitor.props_uel_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
@@ -417,6 +426,8 @@ def _settings_out() -> SettingsOut:
         props_nba_enabled=monitor.props_nba_enabled,
         props_seriea_enabled=monitor.props_seriea_enabled,
         props_epl_enabled=monitor.props_epl_enabled,
+        props_ucl_enabled=monitor.props_ucl_enabled,
+        props_uel_enabled=monitor.props_uel_enabled,
         outright_enabled=monitor.outright_enabled,
         whale_enabled=monitor.whale_enabled,
         whale_min_usd=monitor.whale_min_usd,
@@ -489,6 +500,8 @@ async def update_settings(body: SettingsIn):
         props_nba_enabled=body.props_nba_enabled,
         props_seriea_enabled=body.props_seriea_enabled,
         props_epl_enabled=body.props_epl_enabled,
+        props_ucl_enabled=body.props_ucl_enabled,
+        props_uel_enabled=body.props_uel_enabled,
         outright_enabled=body.outright_enabled,
         whale_enabled=body.whale_enabled,
         whale_min_usd=body.whale_min_usd,

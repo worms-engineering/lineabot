@@ -25,7 +25,7 @@ const SOURCE_PILL = {
   propline: { label: "Book · props", color: "#BF5AF2", title: "Fonte quote: bookmaker USA via PropLine (regola multi-book)" },
   default: { label: "Pinnacle", color: "#007AFF", title: "Fonte quote: Pinnacle (sharp book)" },
 };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", props_epl: "⚽", outright: "🏆" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", props_epl: "⚽", props_ucl: "⚽", props_uel: "⚽", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -398,6 +398,10 @@ export default function Dashboard() {
       "Tiri in porta e tiri della Serie A via PropLine (book USA): solo Over, alert appena 2 book leader (FanDuel, DraftKings, Bovada, Pinnacle, Novig) muovono oltre la soglia props. Serve la key PropLine."],
     ["props_epl", !!status?.props_epl_enabled, "⚽ PROPS EPL", "Premier League player props",
       "Tiri in porta e tiri della Premier League via PropLine (book USA): solo Over, stessa regola multi-book. Serve la key PropLine."],
+    ["props_ucl", !!status?.props_ucl_enabled, "⚽ PROPS UCL", "Champions League player props",
+      "Tiri in porta e tiri della Champions League via PropLine (book USA su tutte le partite): solo Over, stessa regola multi-book. Serve la key PropLine."],
+    ["props_uel", !!status?.props_uel_enabled, "⚽ PROPS UEL", "Europa League player props",
+      "Tiri in porta e tiri dell'Europa League via PropLine: i book USA quotano solo le partite delle squadre più grandi. Solo Over, stessa regola multi-book. Serve la key PropLine."],
   ];
   const togglePmSport = async (key, enabled, name) => {
     try {
@@ -618,6 +622,10 @@ export default function Dashboard() {
                 title={pm.props_seriea.tip} />
               <SportToggle testId="props_epl-toggle" emoji="⚽" label="Premier" sub="tiri · tiri in porta" on={pm.props_epl.on} onClick={() => togglePmSport("props_epl", pm.props_epl.on, pm.props_epl.name)} tone="#BF5AF2"
                 title={pm.props_epl.tip} />
+              <SportToggle testId="props_ucl-toggle" emoji="⚽" label="Champions" sub="tiri · tiri in porta" on={pm.props_ucl.on} onClick={() => togglePmSport("props_ucl", pm.props_ucl.on, pm.props_ucl.name)} tone="#BF5AF2"
+                title={pm.props_ucl.tip} />
+              <SportToggle testId="props_uel-toggle" emoji="⚽" label="Europa L." sub="solo big match" on={pm.props_uel.on} onClick={() => togglePmSport("props_uel", pm.props_uel.on, pm.props_uel.name)} tone="#BF5AF2"
+                title={pm.props_uel.tip} />
             </div>
             <div className="mt-2">
               <QuotaMeter

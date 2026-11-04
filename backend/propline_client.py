@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.prop-line.com/v1"
 SPORT_KEYS = {"props_nba": "basketball_nba", "props_seriea": "soccer_serie_a",
-              "props_epl": "soccer_epl"}
+              "props_epl": "soccer_epl", "props_ucl": "soccer_uefa_champions_league",
+              "props_uel": "soccer_uefa_europa_league"}
 # stat market key -> Italian label for the alert.
 PROP_MARKETS = {
     "player_points": "Punti",
@@ -99,6 +100,12 @@ PROP_SPORTS = {
 }
 # Premier League: same books / markets / cadence as Serie A.
 PROP_SPORTS["props_epl"] = {**PROP_SPORTS["props_seriea"], "label": "Premier League"}
+# UEFA cups (added 2026-11-04): the Champions League has every US book on every
+# game; the Europa League only on the big-club games (the rest is BetRivers
+# alone, which the steam rule can't use). The Conference League is left out:
+# FanDuel + BetRivers on 3 games of 18.
+PROP_SPORTS["props_ucl"] = {**PROP_SPORTS["props_seriea"], "label": "Champions League"}
+PROP_SPORTS["props_uel"] = {**PROP_SPORTS["props_seriea"], "label": "Europa League"}
 # Daily-quota guard: below this many requests left, the football props (one
 # request per league per poll) pause until the 00:00 UTC reset, so the NBA
 # props and the alert-time Italian-price lookups keep working all day.
