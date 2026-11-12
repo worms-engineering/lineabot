@@ -103,7 +103,8 @@ PROPS_FIRST_MOVER_MIN_OTHERS = int(os.environ.get("PROPS_FIRST_MOVER_MIN_OTHERS"
 # OVER side can alert: Italian books don't price player-prop Unders, so an
 # Under move isn't actionable. Unders are still tracked - they show up as the
 # sibling price ("Altre quote") in the Over's alert.
-PROP_SPORT_KEYS = {"nba_props", "props_nba", "props_seriea", "props_epl", "props_ucl", "props_uel"}
+PROP_SPORT_KEYS = {"nba_props", "props_nba", "props_seriea", "props_epl", "props_ucl", "props_uel",
+                   "props_unl"}
 # Anti-spam for sportsbook props (measured on the live alerts: 33 -> 12):
 # - a line that already alerted re-alerts only when the consensus makes a NEW
 #   low at least one props threshold below the price of its last alert (books
@@ -230,6 +231,7 @@ SPORT_META = {
     "props_epl": {"label": "Premier League Props", "emoji": "⚽"},
     "props_ucl": {"label": "Champions League Props", "emoji": "⚽"},
     "props_uel": {"label": "Europa League Props", "emoji": "⚽"},
+    "props_unl": {"label": "Nations League Props", "emoji": "⚽"},
     "outright": {"label": "Outright", "emoji": "🏆"},
 }
 
@@ -242,7 +244,7 @@ PREDICTION_SPORTS = ("f1", "mlb", "nba_props")
 # NBA book props from PropLine, whose client only spends a request while a game
 # is inside the window (one bulk call covers the whole slate).
 FAST_LOOP_SPORTS = PREDICTION_SPORTS + ("props_nba", "props_seriea", "props_epl",
-                                         "props_ucl", "props_uel")
+                                         "props_ucl", "props_uel", "props_unl")
 # The selectable tennis/football odds providers (the other clients are
 # sport-specific and must never be chosen there).
 ODDS_PROVIDERS = ("theoddsapi", "oddspapi")
@@ -354,6 +356,7 @@ class TennisMonitor:
         self.props_epl_enabled = True
         self.props_ucl_enabled = True
         self.props_uel_enabled = True
+        self.props_unl_enabled = True
         self.outright_enabled = True
         self._last_outright_scan: datetime | None = None
         self.whale_enabled = True
@@ -437,6 +440,8 @@ class TennisMonitor:
                 self.props_ucl_enabled = bool(cfg["props_ucl_enabled"])
             if "props_uel_enabled" in cfg:
                 self.props_uel_enabled = bool(cfg["props_uel_enabled"])
+            if "props_unl_enabled" in cfg:
+                self.props_unl_enabled = bool(cfg["props_unl_enabled"])
             if "outright_enabled" in cfg:
                 self.outright_enabled = bool(cfg["outright_enabled"])
             if "whale_enabled" in cfg:
@@ -505,6 +510,7 @@ class TennisMonitor:
                             props_epl_enabled: bool | None = None,
                             props_ucl_enabled: bool | None = None,
                             props_uel_enabled: bool | None = None,
+                            props_unl_enabled: bool | None = None,
                             outright_enabled: bool | None = None,
                             whale_enabled: bool | None = None,
                             whale_min_usd: float | None = None,
@@ -567,6 +573,9 @@ class TennisMonitor:
         if props_uel_enabled is not None:
             self.props_uel_enabled = bool(props_uel_enabled)
             update["props_uel_enabled"] = self.props_uel_enabled
+        if props_unl_enabled is not None:
+            self.props_unl_enabled = bool(props_unl_enabled)
+            update["props_unl_enabled"] = self.props_unl_enabled
         if outright_enabled is not None:
             self.outright_enabled = bool(outright_enabled)
             update["outright_enabled"] = self.outright_enabled
@@ -764,6 +773,8 @@ class TennisMonitor:
             plan.append(("props_ucl", "propline", None))
         if self.props_uel_enabled:
             plan.append(("props_uel", "propline", None))
+        if self.props_unl_enabled:
+            plan.append(("props_unl", "propline", None))
         return plan
 
     def sport_enabled(self, sport: str) -> bool:
@@ -883,6 +894,7 @@ class TennisMonitor:
                 "props_epl_enabled": self.props_epl_enabled,
                 "props_ucl_enabled": self.props_ucl_enabled,
                 "props_uel_enabled": self.props_uel_enabled,
+                "props_unl_enabled": self.props_unl_enabled,
                 "hockey_enabled": self.hockey_enabled,
                 "volley_enabled": self.volley_enabled,
                 "outright_enabled": self.outright_enabled,

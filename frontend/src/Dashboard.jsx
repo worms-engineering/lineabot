@@ -25,7 +25,7 @@ const SOURCE_PILL = {
   propline: { label: "Book · props", color: "#BF5AF2", title: "Fonte quote: bookmaker USA via PropLine (regola multi-book)" },
   default: { label: "Pinnacle", color: "#007AFF", title: "Fonte quote: Pinnacle (sharp book)" },
 };
-const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", props_epl: "⚽", props_ucl: "⚽", props_uel: "⚽", outright: "🏆" };
+const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", props_epl: "⚽", props_ucl: "⚽", props_uel: "⚽", props_unl: "⚽", outright: "🏆" };
 
 // A match is "underway/over" for the alert log if its start time has passed,
 // or if it's an old pre-fix alert (no start_epoch) older than a few hours -
@@ -402,6 +402,8 @@ export default function Dashboard() {
       "Tiri in porta e tiri della Champions League via PropLine (book USA su tutte le partite): solo Over, stessa regola multi-book. Serve la key PropLine."],
     ["props_uel", !!status?.props_uel_enabled, "⚽ PROPS UEL", "Europa League player props",
       "Tiri in porta e tiri dell'Europa League via PropLine: i book USA quotano solo le partite delle squadre più grandi. Solo Over, stessa regola multi-book. Serve la key PropLine."],
+    ["props_unl", !!status?.props_unl_enabled, "⚽ PROPS UNL", "Nations League player props",
+      "Tiri in porta e tiri della UEFA Nations League via PropLine: le nazionali principali (DraftKings quasi ovunque). Solo Over, stessa regola multi-book. Serve la key PropLine."],
   ];
   const togglePmSport = async (key, enabled, name) => {
     try {
@@ -626,6 +628,8 @@ export default function Dashboard() {
                 title={pm.props_ucl.tip} />
               <SportToggle testId="props_uel-toggle" emoji="⚽" label="Europa L." sub="solo big match" on={pm.props_uel.on} onClick={() => togglePmSport("props_uel", pm.props_uel.on, pm.props_uel.name)} tone="#BF5AF2"
                 title={pm.props_uel.tip} />
+              <SportToggle testId="props_unl-toggle" emoji="⚽" label="Nations L." sub="nazionali" on={pm.props_unl.on} onClick={() => togglePmSport("props_unl", pm.props_unl.on, pm.props_unl.name)} tone="#BF5AF2"
+                title={pm.props_unl.tip} />
             </div>
             <div className="mt-2">
               <QuotaMeter

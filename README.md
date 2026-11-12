@@ -152,7 +152,8 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
   Con la stessa key: **player props Serie A e Premier League** (tiri in porta, tiri; book USA; solo Over, niente mercati marcatore; poll ogni
   `PROPLINE_SOCCER_INTERVAL` secondi, default 60) con la stessa regola multi-book. Anche
   **Champions League** (tutte le partite) ed **Europa League** (i book USA quotano solo i big
-  match); la Conference League no, quasi nessun book USA la quota.
+  match) e **Nations League** (le nazionali principali); la Conference League no, quasi nessun
+  book USA la quota.
   La stessa key fornisce anche il **miglior prezzo ITA** negli alert di calcio e tennis (Snai, Eurobet,
   AdmiralBet), unito ai book .it di The Odds API
 - `PROPS_STEAM_MIN_BOOKS` / `PROPS_STEAM_BOOK_MOVE` / `PROPS_LEADER_BOOKS` — regola dei props PropLine:
