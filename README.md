@@ -109,6 +109,15 @@ npm run dev
 ```
 UI su `http://localhost:3000`.
 
+### Test
+```bash
+python tests/run_all.py
+```
+Senza rete, MongoDB o Telegram (servono solo i pacchetti di `backend/requirements.txt`).
+Coprono la regola steam dei props, la lettura dei props PropLine (payload reali in
+`tests/fixtures`), il calcolo degli esiti, la whitelist del calcio e le API degli alert.
+Da lanciare prima di ogni push su `main`, che va in produzione.
+
 ---
 
 ## 3. Deploy del backend su Google Cloud Run
