@@ -88,10 +88,14 @@ PROPS_LEADER_BOOKS = set(
 # Bovada is left out of this single-book path: on a recorded NBA slate it
 # repriced a batch of stale lines (2.15 -> 1.80 with the market at ~1.90) and
 # no other book followed - 9 of 9 lone-Bovada triggers were noise. It still
-# counts toward the 2-leader rule (the Premier League needs it).
+# counts toward the 2-leader rule (the Premier League needs it). Novig is left
+# out too (2026-11-18): lone-Novig alerts won 13 of 31 NBA props against 19
+# expected (-19% ROI at the books still unmoved; FanDuel -8%, DraftKings -3%),
+# typically an exchange price ~4% above the market falling back. Moving WITH
+# other books it is as good as the rest, so it stays a leader.
 PROPS_FIRST_MOVER_BOOKS = set(
     b.strip() for b in os.environ.get(
-        "PROPS_FIRST_MOVER_BOOKS", "pinnacle,novig,fanduel,draftkings").split(",") if b.strip())
+        "PROPS_FIRST_MOVER_BOOKS", "pinnacle,fanduel,draftkings").split(",") if b.strip())
 # Markets that always need PROPS_STEAM_MIN_BOOKS leaders. The double-double
 # sells at 3.00-5.00, where the % threshold is a far smaller probability move
 # (3.70 -> 3.40 is -8% but +2.4 points; 1.91 -> 1.75 is +5): the first 10

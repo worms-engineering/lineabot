@@ -170,8 +170,9 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
   i più allineati al mercato nel report di accuratezza PropLine) hanno accorciato la linea della soglia,
   senza aspettare la mediana di tutti i book; l'alert elenca i book ancora fermi e il consenso.
   **Primo leader** (`PROPS_FIRST_MOVER_GAP`, default 0.5; `PROPS_FIRST_MOVER_MIN_OTHERS`, default 2):
-  basta anche un solo leader (`PROPS_FIRST_MOVER_BOOKS`, default `pinnacle,novig,fanduel,draftkings`:
-  Bovada da solo non basta, ricorregge spesso quote vecchie) se prima del calo era in linea con la
+  basta anche un solo leader (`PROPS_FIRST_MOVER_BOOKS`, default `pinnacle,fanduel,draftkings`:
+  Bovada e Novig da soli non bastano, spesso ricorreggono una quota fuori mercato; insieme ad altri
+  book contano come leader) se prima del calo era in linea con la
   mediana degli altri book e dopo il calo è sotto di almeno metà soglia (è davanti al mercato, non
   sta solo rientrando in linea): si evita di aspettare il secondo leader. La doppia doppia ne è
   esclusa e richiede sempre 2 leader (`PROPS_TWO_LEADER_MARKETS`).

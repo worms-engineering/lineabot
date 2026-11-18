@@ -114,6 +114,20 @@ async def main():
     await scan(m2)
     check(not m2.telegram.sent, "...and still none: it was never in line before moving")
 
+    # Novig alone never triggers; with another leader it counts
+    m4 = props_only_monitor(mon, DB(), pl)
+    state["p"] = {"fanduel": (-110, -110), "draftkings": (-110, -110), "betmgm": (-110, -110),
+                  "novig": (-110, -110)}
+    for _ in range(3):
+        await scan(m4)
+    state["p"]["novig"] = (-150, 120)             # 1.91 -> 1.67, clearly below the market
+    await scan(m4)
+    check(not m4.telegram.sent, "Novig moving alone -> no alert")
+    state["p"]["fanduel"] = (-135, 105)
+    await scan(m4)
+    check(len(m4.telegram.sent) == 1 and "2 leader" in m4.telegram.sent[0]
+          and "Novig★" in m4.telegram.sent[0], "Novig + FanDuel -> alert, Novig counted as a leader")
+
     # double-double: a lone leader never fires, two do
     MARKET["k"] = "player_double_double"
     m3 = props_only_monitor(mon, DB(), pl)
