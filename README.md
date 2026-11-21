@@ -153,6 +153,15 @@ Variabili d'ambiente (le stesse di `backend/.env.example`):
 - `REFRESH_MINUTES` — minuti tra gli scan automatici (default 10)
 - `F1_REFRESH_SECONDS` — secondi tra i fast-scan dei prediction market F1/MLB (default 60, gratuito)
 - `WHALE_REFRESH_SECONDS` — secondi tra i poll del whale monitor Polymarket (default 30, gratuito)
+- `GAME_LINE_SOURCE` / `PROPLINE_ODDS_API_KEY` — fonte delle quote Pinnacle (1X2 / testa a testa e
+  over/under principale) per tutto ciò che altrimenti usa OddsPapi: `propline` (default) o `oddspapi`,
+  cambiabile dalla dashboard (Sport & mercati → Quote Pinnacle). PropLine usa una **key separata** da
+  quella dei player props (impostabile anche da Settings → PropLine key · quote Pinnacle) e subentra solo
+  quando la key è presente: senza key resta OddsPapi. Con PropLine: tennis (tutti i tornei), NBA, WNBA,
+  EuroLeague, NHL e i campionati di calcio della whitelist tranne Serie C e Coppa Italia (PropLine non li
+  ha); il volley va in pausa (PropLine non distingue i campionati). Ogni campionato costa una richiesta
+  per scan solo quando ha una partita nella finestra; altrimenti viene riletto ogni
+  `PROPLINE_ODDS_SCHEDULE_TTL` secondi (default 10800)
 - `PROPLINE_API_KEY` — key PropLine (prop-line.com, free 1.000 richieste/giorno) per i player props NBA
   dei bookmaker; impostabile anche dalla dashboard (Settings → PropLine key). `PROPLINE_SOURCE_BOOK`
   sceglie il book tracciato (default `fanduel`); gli altri book compaiono nell'alert per confronto.

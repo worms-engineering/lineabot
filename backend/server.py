@@ -17,7 +17,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from monitor import FAST_LOOP_SPORTS, ODDS_PROVIDERS, TennisMonitor
+from monitor import FAST_LOOP_SPORTS, GAME_LINE_SOURCES, ODDS_PROVIDERS, TennisMonitor
 from settlement import RESULTS_SINCE, Settler, summarize, under_current_rules
 
 ROOT_DIR = Path(__file__).parent
@@ -154,11 +154,13 @@ class SettingsIn(BaseModel):
     whale_min_usd: float | None = Field(default=None, ge=0.0)
     provider: str | None = None
     football_provider: str | None = None
+    game_line_source: str | None = None
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
     oddspapi_api_key: str | None = None
     theoddsapi_api_key: str | None = None
     propline_api_key: str | None = None
+    propline_odds_api_key: str | None = None
 
 
 class SettingsOut(BaseModel):
@@ -185,6 +187,7 @@ class SettingsOut(BaseModel):
     whale_min_usd: float
     provider: str
     football_provider: str
+    game_line_source: str
     providers: list[str]
     telegram_configured: bool
     refresh_minutes: int
@@ -196,6 +199,9 @@ class SettingsOut(BaseModel):
     # Result of the last PropLine request ("✓ key valida · N richieste rimaste
     # oggi" / "✗ key rifiutata ..."), so a bad key is visible in Settings.
     propline_status: str | None = None
+    # Same for the separate PropLine key used for the Pinnacle game lines.
+    propline_odds_key_hint: str | None = None
+    propline_odds_status: str | None = None
 
 
 class StatusOut(BaseModel):
@@ -226,6 +232,10 @@ class StatusOut(BaseModel):
     whale_enabled: bool
     provider: str
     football_provider: str
+    game_line_source: str
+    # True only while PropLine actually serves the game lines (source set to
+    # PropLine AND its key present; otherwise OddsPapi still does).
+    game_lines_via_propline: bool = False
     use_mock_data: bool
     requests_remaining: int | None
     quota_warning: str | None
@@ -236,6 +246,10 @@ class StatusOut(BaseModel):
     propline_daily_limit: int | None = None
     propline_status: str | None = None
     propline_checked_at: str | None = None
+    propline_odds_requests_remaining: int | None = None
+    propline_odds_daily_limit: int | None = None
+    propline_odds_status: str | None = None
+    propline_odds_checked_at: str | None = None
 
 
 class TrackingIn(BaseModel):
@@ -246,21 +260,16 @@ class TrackingIn(BaseModel):
 
 LOW_QUOTA_THRESHOLD = 20  # warn when The Odds API credits fall to/below this
 
-_PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi"}
+_PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi",
+                    "propline": "PropLine props", "propline_odds": "PropLine quote"}
 
 
 def _quota_warning() -> str | None:
     """Human message if any in-use provider is out of / low on quota."""
-    # `provider` is the tennis odds source: only in use while tennis is on.
-    in_use = {monitor.provider} if monitor.tennis_enabled else set()
-    if monitor.basketball_enabled:
-        in_use.add("oddspapi")  # basketball always runs on OddsPapi
-    if monitor.football_enabled:
-        in_use.add(monitor.football_provider)
-    if monitor.hockey_enabled:
-        in_use.add("oddspapi")  # hockey always runs on OddsPapi
-    if monitor.volley_enabled:
-        in_use.add("oddspapi")  # volleyball always runs on OddsPapi
+    # The client actually serving each sport this cycle (the scan plan swaps
+    # OddsPapi for PropLine while PropLine is the game-line source).
+    in_use = {prov for sport, prov, _ in monitor._scan_plan()
+              if sport in ("tennis", "basketball", "football", "hockey", "volley")}
     if ((monitor.props_nba_enabled or monitor.props_seriea_enabled
          or monitor.props_epl_enabled or monitor.props_ucl_enabled
          or monitor.props_uel_enabled or monitor.props_unl_enabled)
@@ -322,12 +331,15 @@ async def get_status():
         whale_enabled=monitor.whale_enabled,
         provider=monitor.provider,
         football_provider=monitor.football_provider,
+        game_line_source=monitor.game_line_source,
+        game_lines_via_propline=monitor.game_lines_via_propline,
         use_mock_data=monitor.client.use_mock,
         requests_remaining=monitor.client.requests_remaining,
         quota_warning=_quota_warning(),
         last_key_rotation_at=monitor.last_rotation_at.isoformat() if monitor.last_rotation_at else None,
         last_key_rotation_error=monitor.last_rotation_error,
-        **_propline_quota(),
+        **_propline_quota("propline"),
+        **_propline_quota("propline_odds"),
     )
 
 
@@ -420,11 +432,15 @@ def _settings_out() -> SettingsOut:
     op_key = monitor.clients["oddspapi"].api_key
     toa_key = monitor.clients["theoddsapi"].api_key
     pl_key = monitor.clients["propline"].api_key
+    plo_key = monitor.clients["propline_odds"].api_key
     return SettingsOut(
+        propline_odds_key_hint=f"…{plo_key[-4:]}" if plo_key else None,
+        propline_odds_status=_propline_status("propline_odds"),
+        game_line_source=monitor.game_line_source,
         oddspapi_key_hint=f"…{op_key[-4:]}" if op_key else None,
         theoddsapi_key_hint=f"…{toa_key[-4:]}" if toa_key else None,
         propline_key_hint=f"…{pl_key[-4:]}" if pl_key else None,
-        propline_status=_propline_status(),
+        propline_status=_propline_status("propline"),
         drop_threshold=monitor.drop_threshold,
         football_drop_threshold=monitor.football_drop_threshold,
         props_drop_threshold=monitor.props_drop_threshold,
@@ -461,22 +477,24 @@ async def get_settings():
     return _settings_out()
 
 
-def _propline_quota() -> dict:
-    pl = monitor.clients.get("propline")
+def _propline_quota(name: str) -> dict:
+    """Daily-quota fields of one PropLine client ('propline' = props key,
+    'propline_odds' = game-lines key), prefixed with its name."""
+    pl = monitor.clients.get(name)
     if pl is None or not getattr(pl, "api_key", None):
         return {}
     ok_at = getattr(pl, "last_ok_at", None)
     return {
-        "propline_requests_remaining": getattr(pl, "requests_remaining", None),
-        "propline_daily_limit": getattr(pl, "daily_limit", None),
-        "propline_status": _propline_status(),
-        "propline_checked_at": (datetime.fromtimestamp(ok_at, tz=timezone.utc).isoformat()
-                                if ok_at else None),
+        f"{name}_requests_remaining": getattr(pl, "requests_remaining", None),
+        f"{name}_daily_limit": getattr(pl, "daily_limit", None),
+        f"{name}_status": _propline_status(name),
+        f"{name}_checked_at": (datetime.fromtimestamp(ok_at, tz=timezone.utc).isoformat()
+                               if ok_at else None),
     }
 
 
-def _propline_status() -> str | None:
-    fn = getattr(monitor.clients.get("propline"), "status_text", None)
+def _propline_status(name: str) -> str | None:
+    fn = getattr(monitor.clients.get(name), "status_text", None)
     return fn() if callable(fn) else None
 
 
@@ -499,6 +517,8 @@ async def update_settings(body: SettingsIn):
         raise HTTPException(400, f"Unknown provider: {body.provider}")
     if body.football_provider is not None and body.football_provider not in ODDS_PROVIDERS:
         raise HTTPException(400, f"Unknown football_provider: {body.football_provider}")
+    if body.game_line_source is not None and body.game_line_source not in GAME_LINE_SOURCES:
+        raise HTTPException(400, f"Unknown game_line_source: {body.game_line_source}")
     await monitor.save_settings(
         drop_threshold=body.drop_threshold,
         football_drop_threshold=body.football_drop_threshold,
@@ -523,6 +543,7 @@ async def update_settings(body: SettingsIn):
         whale_min_usd=body.whale_min_usd,
         provider=body.provider,
         football_provider=body.football_provider,
+        game_line_source=body.game_line_source,
         telegram_token=body.telegram_token,
         telegram_chat_id=body.telegram_chat_id,
         oddspapi_api_key=(body.oddspapi_api_key.strip() or None)
@@ -530,17 +551,21 @@ async def update_settings(body: SettingsIn):
         theoddsapi_api_key=(body.theoddsapi_api_key.strip() or None)
         if body.theoddsapi_api_key is not None else None,
         propline_api_key=_clean_key(body.propline_api_key),
+        propline_odds_api_key=_clean_key(body.propline_odds_api_key),
     )
-    pl = monitor.clients.get("propline")
-    if body.propline_api_key and getattr(pl, "api_key", None) and hasattr(pl, "check_key"):
-        await pl.check_key()
+    for name, sent in (("propline", body.propline_api_key),
+                       ("propline_odds", body.propline_odds_api_key)):
+        pl = monitor.clients.get(name)
+        if sent and getattr(pl, "api_key", None) and hasattr(pl, "check_key"):
+            await pl.check_key()
     return _settings_out()
 
 
 @api.post("/propline/check")
-async def propline_check():
-    """Test the current PropLine key with one request (dashboard button)."""
-    return await monitor.clients["propline"].check_key()
+async def propline_check(which: str = "props"):
+    """Test a PropLine key with one request (dashboard button): the props
+    key, or with which=odds the game-lines key."""
+    return await monitor.clients["propline_odds" if which == "odds" else "propline"].check_key()
 
 
 @api.post("/telegram/test")

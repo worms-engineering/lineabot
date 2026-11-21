@@ -18,11 +18,12 @@ import { Label } from "@/components/ui/label";
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
-const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi" };
+const PROVIDER_LABELS = { theoddsapi: "The Odds API", oddspapi: "OddsPapi", propline: "PropLine" };
 // Alert-log source pill per backend provider.
 const SOURCE_PILL = {
   prediction: { label: "Polymarket", color: "#FF2D55", title: "Fonte quote: Polymarket (prediction market)" },
   propline: { label: "Book · props", color: "#BF5AF2", title: "Fonte quote: bookmaker USA via PropLine (regola multi-book)" },
+  propline_odds: { label: "Pinnacle", color: "#007AFF", title: "Fonte quote: Pinnacle via PropLine" },
   default: { label: "Pinnacle", color: "#007AFF", title: "Fonte quote: Pinnacle (sharp book)" },
 };
 const SPORT_EMOJI = { tennis: "🎾", basketball: "🏀", football: "⚽", hockey: "🏒", volley: "🏐", f1: "🏎️", mlb: "⚾", nba_props: "🏀", props_nba: "🏀", props_seriea: "⚽", props_epl: "⚽", props_ucl: "⚽", props_uel: "⚽", props_unl: "⚽", outright: "🏆" };
@@ -422,6 +423,23 @@ export default function Dashboard() {
     ...pmToggles.map(t => t[1])].filter(Boolean).length;
   const totalSports = 8 + pmToggles.length;
 
+  // Where the Pinnacle game lines come from: PropLine (own key) or OddsPapi.
+  // With PropLine, "OddsPapi" in the tennis/football switches means PropLine.
+  const gameSource = status?.game_line_source || "oddspapi";
+  const viaPropline = !!status?.game_lines_via_propline;  // PropLine selected AND its key set
+  const proplineNoKey = gameSource === "propline" && !viaPropline;
+  const setGameSource = async (s) => {
+    if (!s || s === gameSource) return;
+    try {
+      await axios.put(`${API}/settings`, { game_line_source: s });
+      toast.success(`Quote Pinnacle → ${PROVIDER_LABELS[s] || s}`);
+      await loadAll();
+    } catch (e) {
+      toast.error("Errore: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+  const providerLabels = viaPropline ? { oddspapi: "PropLine" } : undefined;
+
   const footballProvider = status?.football_provider;
   const setFootballProvider = async (p) => {
     if (!p || p === footballProvider) return;
@@ -538,6 +556,15 @@ export default function Dashboard() {
             status={status?.propline_status}
             testId="propline-quota-pill"
           />
+          {viaPropline && (
+            <QuotaPill
+              label="PL quote"
+              remaining={status?.propline_odds_requests_remaining}
+              limit={status?.propline_odds_daily_limit}
+              status={status?.propline_odds_status}
+              testId="propline-odds-quota-pill"
+            />
+          )}
         </div>
       </header>
 
@@ -572,10 +599,23 @@ export default function Dashboard() {
                 title="Traccia il calcio (campionati principali, coppe UEFA, Nations League)" />
               <SportToggle testId="hockey-toggle" emoji="🏒" label="Hockey" sub="NHL e leghe" on={hockey} onClick={toggleHockey} tone="#64D2FF"
                 title="Traccia l'hockey su ghiaccio" />
-              <SportToggle testId="volley-toggle" emoji="🏐" label="Volley" sub="SuperLega · CEV" on={volley} onClick={toggleVolley} tone="#FFD60A"
-                title="Traccia il volley (SuperLega, Serie A1 femminile, coppe CEV, nazionali · solo H2H)" />
+              <SportToggle testId="volley-toggle" emoji="🏐" label="Volley" sub={viaPropline ? "in pausa con PropLine" : "SuperLega · CEV"} on={volley} onClick={toggleVolley} tone="#FFD60A"
+                title={viaPropline
+                  ? "Con le quote da PropLine il volley è in pausa: PropLine non distingue i campionati (SuperLega, CEV) e porterebbe partite di tutto il mondo"
+                  : "Traccia il volley (SuperLega, Serie A1 femminile, coppe CEV, nazionali · solo H2H)"} />
             </div>
             <div className="mt-2 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-widest text-zinc-500">Quote Pinnacle</span>
+                <Segmented
+                  testId="game-source-switch"
+                  itemTestId="game-source"
+                  options={["propline", "oddspapi"]}
+                  value={gameSource}
+                  onChange={setGameSource}
+                  color="#BF5AF2"
+                />
+              </div>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] uppercase tracking-widest text-zinc-500">Fonte tennis</span>
                 <Segmented
@@ -585,6 +625,7 @@ export default function Dashboard() {
                   value={provider}
                   onChange={setProvider}
                   color="#007AFF"
+                  labels={providerLabels}
                 />
               </div>
               {football && (
@@ -597,8 +638,26 @@ export default function Dashboard() {
                     value={footballProvider}
                     onChange={setFootballProvider}
                     color="#32D74B"
+                    labels={providerLabels}
                   />
                 </div>
+              )}
+              {proplineNoKey && (
+                <div className="text-[10px] text-[#FF9F0A] leading-relaxed" data-testid="propline-odds-nokey">
+                  PropLine selezionato ma senza key: finché non la inserisci in Settings
+                  (PropLine key · quote Pinnacle) le quote arrivano ancora da OddsPapi.
+                </div>
+              )}
+              {viaPropline && (
+                <QuotaMeter
+                  title="Chiamate PropLine quote oggi"
+                  empty="Quote da PropLine: imposta la key per le quote Pinnacle in Settings."
+                  testId="propline-odds-quota"
+                  remaining={status?.propline_odds_requests_remaining}
+                  limit={status?.propline_odds_daily_limit}
+                  status={status?.propline_odds_status}
+                  checkedAt={status?.propline_odds_checked_at}
+                />
               )}
             </div>
 
@@ -1045,7 +1104,7 @@ function SportToggle({ emoji, label, sub, on, onClick, title, testId, tone = "#3
 }
 
 // Two-way segmented switch (tennis / football odds provider).
-function Segmented({ options, value, onChange, testId, itemTestId, color }) {
+function Segmented({ options, value, onChange, testId, itemTestId, color, labels }) {
   return (
     <div className="flex border border-white/15" data-testid={testId}>
       {options.map(p => (
@@ -1059,7 +1118,7 @@ function Segmented({ options, value, onChange, testId, itemTestId, color }) {
           }`}
           style={value === p ? { background: color } : undefined}
         >
-          {PROVIDER_LABELS[p] || p}
+          {labels?.[p] || PROVIDER_LABELS[p] || p}
         </button>
       ))}
     </div>
@@ -1089,11 +1148,12 @@ function QuotaPill({ label, remaining, limit, status, testId }) {
 }
 
 // Sidebar meter: PropLine daily quota with a bar, reset time and key status.
-function QuotaMeter({ remaining, limit, status, checkedAt }) {
+function QuotaMeter({ remaining, limit, status, checkedAt, title = "Chiamate PropLine oggi",
+  empty = "PropLine: imposta la key in Settings per i player props dei book.", testId = "propline-quota" }) {
   if (remaining == null && !status) {
     return (
-      <div className="border border-white/10 p-2.5 text-[10px] text-zinc-600" data-testid="propline-quota">
-        PropLine: imposta la key in Settings per i player props dei book.
+      <div className="border border-white/10 p-2.5 text-[10px] text-zinc-600" data-testid={testId}>
+        {empty}
       </div>
     );
   }
@@ -1102,9 +1162,9 @@ function QuotaMeter({ remaining, limit, status, checkedAt }) {
   const bad = (status || "").startsWith("✗");
   const color = bad ? "#FF3B30" : quotaColor(remaining, lim);
   return (
-    <div className="border border-white/10 p-2.5" data-testid="propline-quota">
+    <div className="border border-white/10 p-2.5" data-testid={testId}>
       <div className="flex items-baseline justify-between text-[10px] uppercase tracking-widest text-zinc-500">
-        <span>Chiamate PropLine oggi</span>
+        <span>{title}</span>
         <span className="font-mono text-sm" style={{ color }}>
           {remaining ?? "—"}<span className="text-zinc-600 text-[10px]"> / {lim.toLocaleString()}</span>
         </span>
@@ -1174,18 +1234,21 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
   const [oddspapiKey, setOddspapiKey] = useState("");
   const [theoddsapiKey, setTheoddsapiKey] = useState("");
   const [proplineKey, setProplineKey] = useState("");
-  const [checkingPl, setCheckingPl] = useState(false);
-  const checkPropline = async () => {
-    setCheckingPl(true);
+  const [proplineOddsKey, setProplineOddsKey] = useState("");
+  const [checkingPl, setCheckingPl] = useState("");
+  // which: "props" (player-props key) or "odds" (Pinnacle game-lines key)
+  const checkPropline = async (which = "props") => {
+    setCheckingPl(which);
+    const name = which === "odds" ? "PropLine quote" : "PropLine";
     try {
-      const r = await axios.post(`${API}/propline/check`);
-      if (r.data.ok) toast.success(`PropLine: key valida · ${r.data.remaining ?? "?"} richieste rimaste oggi`);
-      else toast.error(`PropLine: ${r.data.error}`, { duration: 10000 });
+      const r = await axios.post(`${API}/propline/check`, null, { params: { which } });
+      if (r.data.ok) toast.success(`${name}: key valida · ${r.data.remaining ?? "?"} richieste rimaste oggi`);
+      else toast.error(`${name}: ${r.data.error}`, { duration: 10000 });
       await onSaved();
     } catch (e) {
       toast.error("Errore: " + (e?.response?.data?.detail || e.message));
     } finally {
-      setCheckingPl(false);
+      setCheckingPl("");
     }
   };
   const [whaleUsd, setWhaleUsd] = useState(25000);
@@ -1210,13 +1273,14 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
       if (oddspapiKey.trim()) body.oddspapi_api_key = oddspapiKey.trim();
       if (theoddsapiKey.trim()) body.theoddsapi_api_key = theoddsapiKey.trim();
       if (proplineKey.trim()) body.propline_api_key = proplineKey.trim();
+      if (proplineOddsKey.trim()) body.propline_odds_api_key = proplineOddsKey.trim();
       const res = await axios.put(`${API}/settings`, body);
       toast.success("Impostazioni salvate");
-      const pl = res?.data?.propline_status;
-      if (body.propline_api_key && pl) {
-        (pl.startsWith("✓") ? toast.success : toast.error)(`PropLine: ${pl}`, { duration: 10000 });
+      for (const [sent, st, name] of [[body.propline_api_key, res?.data?.propline_status, "PropLine"],
+        [body.propline_odds_api_key, res?.data?.propline_odds_status, "PropLine quote"]]) {
+        if (sent && st) (st.startsWith("✓") ? toast.success : toast.error)(`${name}: ${st}`, { duration: 10000 });
       }
-      setToken(""); setChatId(""); setOddspapiKey(""); setTheoddsapiKey(""); setProplineKey("");
+      setToken(""); setChatId(""); setOddspapiKey(""); setTheoddsapiKey(""); setProplineKey(""); setProplineOddsKey("");
       await onSaved();
       setOpen(false);
     } catch (e) {
@@ -1368,11 +1432,41 @@ function SettingsDialog({ settings, onSaved, customSound, onUploadSound, onReset
                 <button
                   type="button"
                   data-testid="settings-propline-check"
-                  disabled={checkingPl}
-                  onClick={checkPropline}
+                  disabled={!!checkingPl}
+                  onClick={() => checkPropline("props")}
                   className="shrink-0 px-2 py-1 border border-white/20 text-[10px] uppercase tracking-widest text-zinc-300 hover:bg-white/10"
                 >
-                  {checkingPl ? "..." : "Verifica"}
+                  {checkingPl === "props" ? "..." : "Verifica"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-widest text-zinc-400">PropLine key · quote Pinnacle</div>
+            <div className="text-[10px] text-zinc-600">Key separata da quella dei player props: serve per le quote Pinnacle (1X2 / testa a testa e over/under) quando la fonte "Quote Pinnacle" è PropLine. Lascia vuoto per non cambiare.</div>
+            <Input
+              data-testid="settings-propline-odds-key"
+              value={proplineOddsKey}
+              onChange={e => setProplineOddsKey(e.target.value)}
+              placeholder="es. 7f3a9c..."
+              className="rounded-none bg-[#0A0A0A] border-white/20 font-mono"
+            />
+            {settings?.propline_odds_key_hint && (
+              <div className="flex items-center justify-between gap-2">
+                <div className={`text-[10px] uppercase tracking-widest ${
+                  (settings.propline_odds_status || "").startsWith("✗") ? "text-[#FF3B30]" : "text-[#32D74B]"
+                }`}>
+                  Key {settings.propline_odds_key_hint}{settings.propline_odds_status ? ` — ${settings.propline_odds_status}` : ""}
+                </div>
+                <button
+                  type="button"
+                  data-testid="settings-propline-odds-check"
+                  disabled={!!checkingPl}
+                  onClick={() => checkPropline("odds")}
+                  className="shrink-0 px-2 py-1 border border-white/20 text-[10px] uppercase tracking-widest text-zinc-300 hover:bg-white/10"
+                >
+                  {checkingPl === "odds" ? "..." : "Verifica"}
                 </button>
               </div>
             )}

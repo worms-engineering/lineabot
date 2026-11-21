@@ -25,6 +25,7 @@ from pymongo import UpdateOne
 from theoddsapi_client import TheOddsApiClient
 from oddspapi_client import OddsPapiClient
 from propline_client import PropLineClient
+from propline_odds_client import PropLineOddsClient, SUPPORTED_SPORTS as PROPLINE_GAME_SPORTS
 from propline_client import _book_label as pl_book_label
 from telegram_client import TelegramClient
 from key_rotation import generate_oddspapi_key, KeyRotationError
@@ -252,6 +253,14 @@ FAST_LOOP_SPORTS = PREDICTION_SPORTS + ("props_nba", "props_seriea", "props_epl"
 # The selectable tennis/football odds providers (the other clients are
 # sport-specific and must never be chosen there).
 ODDS_PROVIDERS = ("theoddsapi", "oddspapi")
+# Where the Pinnacle game lines (h2h + main total) come from for everything
+# that would otherwise use OddsPapi: OddsPapi itself, or PropLine with its own
+# key (propline_odds_client.py). Switchable from the dashboard; the env var is
+# only the initial value. PropLine takes over only once its key is set (until
+# then OddsPapi keeps the sports covered). PropLine has no Italy-filterable
+# volleyball, so volleyball pauses while PropLine serves the game lines.
+GAME_LINE_SOURCES = ("oddspapi", "propline")
+DEFAULT_GAME_LINE_SOURCE = os.environ.get("GAME_LINE_SOURCE", "propline")
 
 # Outright (tournament-winner / award) markets on Polymarket, tracked on the
 # MAIN scan loop and - unlike everything else - with NO 60-minute window: an
@@ -280,7 +289,7 @@ OUTRIGHT_MARKETS = [
 OUTRIGHT_REFRESH_SECONDS = int(os.environ.get("OUTRIGHT_REFRESH_SECONDS", str(30 * 60)))
 
 PROVIDER_LABELS = {"theoddsapi": "The Odds API", "oddspapi": "OddsPapi",
-                   "propline": "PropLine"}
+                   "propline": "PropLine", "propline_odds": "PropLine (quote Pinnacle)"}
 
 # F1 multi-driver markets (race winner, podium, pole, sprint...) are shown as
 # "<GP> · <market>" instead of "A vs B" - derived from the tracked list so a
@@ -336,7 +345,10 @@ class TennisMonitor:
             "oddspapi": OddsPapiClient(),
             "prediction": PredictionMarketsClient(),
             "propline": PropLineClient(),
+            "propline_odds": PropLineOddsClient(),
         }
+        self.game_line_source = (DEFAULT_GAME_LINE_SOURCE
+                                 if DEFAULT_GAME_LINE_SOURCE in GAME_LINE_SOURCES else "oddspapi")
         self.provider = DEFAULT_PROVIDER
         self.football_provider = "oddspapi"  # switch to "theoddsapi" later in-season
         self.drop_threshold = drop_threshold
@@ -400,7 +412,19 @@ class TennisMonitor:
 
     @property
     def client(self):
-        return self.clients[self.provider]
+        return self.clients[self.game_provider(self.provider)]
+
+    def game_provider(self, provider: str) -> str:
+        """The client that actually serves a sport set to `provider`: OddsPapi
+        is swapped for PropLine while PropLine is the game-line source AND
+        its key is set - without a key OddsPapi keeps the sports covered."""
+        if provider == "oddspapi" and self.game_lines_via_propline:
+            return "propline_odds"
+        return provider
+
+    @property
+    def game_lines_via_propline(self) -> bool:
+        return self.game_line_source == "propline" and bool(self.clients["propline_odds"].api_key)
 
     async def close(self):
         for c in self.clients.values():
@@ -456,6 +480,8 @@ class TennisMonitor:
                 self.provider = cfg["provider"]
             if cfg.get("football_provider") in ODDS_PROVIDERS:
                 self.football_provider = cfg["football_provider"]
+            if cfg.get("game_line_source") in GAME_LINE_SOURCES:
+                self.game_line_source = cfg["game_line_source"]
             # OddsPapi key: a key stored here (set from the dashboard, or written
             # by auto-rotation) takes precedence and wins. The ODDSPAPI_KEY env
             # var, applied in the client's __init__, is only the initial seed used
@@ -472,6 +498,9 @@ class TennisMonitor:
             propline_key = cfg.get("propline_api_key")
             if propline_key:
                 self.clients["propline"].api_key = propline_key
+            propline_odds_key = cfg.get("propline_odds_api_key")
+            if propline_odds_key:
+                self.clients["propline_odds"].api_key = propline_odds_key
             token = cfg.get("telegram_token")
             chat_id = cfg.get("telegram_chat_id")
             if token:
@@ -520,11 +549,13 @@ class TennisMonitor:
                             whale_min_usd: float | None = None,
                             provider: str | None = None,
                             football_provider: str | None = None,
+                            game_line_source: str | None = None,
                             telegram_token: str | None = None,
                             telegram_chat_id: str | None = None,
                             oddspapi_api_key: str | None = None,
                             theoddsapi_api_key: str | None = None,
-                            propline_api_key: str | None = None):
+                            propline_api_key: str | None = None,
+                            propline_odds_api_key: str | None = None):
         update: dict[str, Any] = {}
         if drop_threshold is not None:
             self.drop_threshold = float(drop_threshold)
@@ -599,6 +630,11 @@ class TennisMonitor:
                 raise ValueError(f"unknown football_provider: {football_provider}")
             self.football_provider = football_provider
             update["football_provider"] = football_provider
+        if game_line_source is not None:
+            if game_line_source not in GAME_LINE_SOURCES:
+                raise ValueError(f"unknown game_line_source: {game_line_source}")
+            self.game_line_source = game_line_source
+            update["game_line_source"] = game_line_source
         if telegram_token is not None:
             self.telegram.token = telegram_token
             update["telegram_token"] = telegram_token
@@ -620,6 +656,11 @@ class TennisMonitor:
             self.clients["propline"].quota_exhausted = False
             self._quota_alerted.discard("propline")
             update["propline_api_key"] = propline_api_key
+        if propline_odds_api_key is not None:
+            self.clients["propline_odds"].api_key = propline_odds_api_key
+            self.clients["propline_odds"].quota_exhausted = False
+            self._quota_alerted.discard("propline_odds")
+            update["propline_odds_api_key"] = propline_odds_api_key
         if update:
             await self.db.settings.update_one(
                 {"_id": "config"}, {"$set": update}, upsert=True
@@ -739,23 +780,34 @@ class TennisMonitor:
 
     def _scan_plan(self) -> list[tuple]:
         """(sport, provider_key, tournament_whitelist) to scan this cycle."""
-        plan = []
+        game = []
         if self.tennis_enabled:
-            plan.append(("tennis", self.provider, None))
+            game.append(("tennis", self.provider, None))
         if self.basketball_enabled:
-            plan.append(("basketball", "oddspapi", BASKETBALL_WHITELIST))
+            game.append(("basketball", "oddspapi", BASKETBALL_WHITELIST))
         if self.football_enabled:
             # Independent toggle from tennis' `provider`: OddsPapi needs a
             # name-based whitelist (worldwide calendar), The Odds API filters
             # via its own fixed sport-key list internally (whitelist=None).
             whitelist = FOOTBALL_WHITELIST_ODDSPAPI if self.football_provider == "oddspapi" else None
-            plan.append(("football", self.football_provider, whitelist))
+            game.append(("football", self.football_provider, whitelist))
         if self.hockey_enabled:
-            plan.append(("hockey", "oddspapi", HOCKEY_WHITELIST))
+            game.append(("hockey", "oddspapi", HOCKEY_WHITELIST))
         if self.volley_enabled:
             # Volleyball: OddsPapi, H2H-only, restricted to the Italy-relevant
             # competitions (whitelist above).
-            plan.append(("volley", "oddspapi", VOLLEY_WHITELIST_ODDSPAPI))
+            game.append(("volley", "oddspapi", VOLLEY_WHITELIST_ODDSPAPI))
+        # With PropLine as the game-line source, OddsPapi sports move to it
+        # (its own league list replaces the OddsPapi whitelists); a sport it
+        # can't serve is skipped rather than silently left on OddsPapi.
+        plan = []
+        for sport, prov, wl in game:
+            prov = self.game_provider(prov)
+            if prov == "propline_odds":
+                if sport not in PROPLINE_GAME_SPORTS:
+                    continue
+                wl = None
+            plan.append((sport, prov, wl))
         if self.f1_enabled:
             plan.append(("f1", "prediction", None))
         if self.mlb_enabled:
@@ -890,6 +942,7 @@ class TennisMonitor:
                 "basketball_enabled": self.basketball_enabled,
                 "football_enabled": self.football_enabled,
                 "football_provider": self.football_provider,
+                "game_line_source": self.game_line_source,
                 "f1_enabled": self.f1_enabled,
                 "mlb_enabled": self.mlb_enabled,
                 "nba_props_enabled": self.nba_props_enabled,
